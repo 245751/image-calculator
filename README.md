@@ -14,8 +14,3 @@
 - `data/archives/`: データセットのZIP保管場所
 - `outputs/`: 学習ログ、チェックポイント、プレビュー
 
-## 実行例
-
-```bash
-uv run python scripts/run_inference.py
-```
