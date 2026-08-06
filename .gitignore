@@ -1,0 +1,11 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+
+# 容量の大きい生成物
+data/
+models/*.pth
+outputs/
+assets/fonts

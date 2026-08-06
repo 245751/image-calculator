@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: image-calculator
+Version: 0.1.0
+Summary: 手書き数式を物体検出で読み取る画像計算機
+Requires-Python: >=3.10
+Requires-Dist: matplotlib>=3.10.9
+Requires-Dist: pillow>=12.2.0
+Requires-Dist: torch>=2.12.0
+Requires-Dist: torchvision>=0.27.0
+Requires-Dist: tqdm>=4.67.3

@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+src/image_calculator/__init__.py
+src/image_calculator/calculator.py
+src/image_calculator/token_calculator.py
+src/image_calculator.egg-info/PKG-INFO
+src/image_calculator.egg-info/SOURCES.txt
+src/image_calculator.egg-info/dependency_links.txt
+src/image_calculator.egg-info/requires.txt
+src/image_calculator.egg-info/top_level.txt
