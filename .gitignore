@@ -4,6 +4,7 @@ __pycache__/
 .ipynb_checkpoints/
 .venv/
 uv.lock
+*.egg-info/
 
 # 容量の大きい生成物
 data/
