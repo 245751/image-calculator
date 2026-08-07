@@ -2,13 +2,13 @@
 name = "image-calculator"
 version = "0.1.0"
 description = "手書き数式を物体検出で読み取る画像計算機"
-requires-python = "==3.10"
+requires-python = ">=3.10"
 dependencies = [
-    "matplotlib==3.10.9",
-    "pillow==12.2.0",
-    "torch==2.12.0",
-    "torchvision==0.27.0",
-    "tqdm==4.67.3",
+    "matplotlib>=3.10.9",
+    "pillow>=12.2.0",
+    "torch>=2.12.0",
+    "torchvision>=0.27.0",
+    "tqdm>=4.67.3",
 ]
 
 [build-system]
@@ -17,3 +17,16 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu126", marker = "sys_platform == 'linux'" },
+]
+torchvision = [
+    { index = "pytorch-cu126", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
