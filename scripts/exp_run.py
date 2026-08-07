@@ -169,6 +169,41 @@ def evaluate_detector(model, data_loader):
     f1 = 2 * precision * recall / max(precision + recall, 1e-12)
     return precision, recall, f1
 
+
+def evaluate_loss(model, data_loader):
+    """検証データの平均lossを、重みを更新せずに計算する。"""
+    was_training = model.training
+
+    # Torchvisionの物体検出モデルはtrainモードのときだけlossを返す。
+    # BatchNormの移動平均は検証データで更新しないよう、個別にevalへ戻す。
+    model.train()
+    for module in model.modules():
+        if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+            module.eval()
+
+    running_loss = 0.0
+    num_batches = 0
+
+    try:
+        with torch.no_grad():
+            for images, targets in tqdm(
+                data_loader, desc="Validation loss", leave=False
+            ):
+                images = [image.to(device) for image in images]
+                targets = [
+                    {key: value.to(device) for key, value in target.items()}
+                    for target in targets
+                ]
+
+                loss_dict = model(images, targets)
+                loss = sum(loss_dict.values())
+                running_loss += loss.item()
+                num_batches += 1
+    finally:
+        model.train(was_training)
+
+    return running_loss / max(num_batches, 1)
+
 print(
     f"device: {device} / train images: {len(train_dataset)} "
     f"/ val images: {len(val_dataset)}"
@@ -177,7 +212,9 @@ print(
 # 学習開始時にCSVを新規作成し、各エポック終了時に結果を追記する
 with open(CSV_PATH, "w", newline="", encoding="utf-8") as csv_file:
     writer = csv.writer(csv_file)
-    writer.writerow(["epoch", "train_loss", "precision", "recall", "f1"])
+    writer.writerow(
+        ["epoch", "train_loss", "val_loss", "precision", "recall", "f1"]
+    )
 
 for epoch in range(NUM_EPOCHS):
     model.train()
@@ -202,15 +239,19 @@ for epoch in range(NUM_EPOCHS):
         progress.set_postfix(loss=f"{loss.item():.4f}")
 
     mean_loss = running_loss / len(train_loader)
+    val_loss = evaluate_loss(model, val_loader)
     precision, recall, f1 = evaluate_detector(model, val_loader)
     print(
-        f"Epoch {epoch + 1}: loss={mean_loss:.4f}, "
+        f"Epoch {epoch + 1}: train_loss={mean_loss:.4f}, "
+        f"val_loss={val_loss:.4f}, "
         f"precision={precision:.4f}, recall={recall:.4f}, f1={f1:.4f}"
     )
 
     with open(CSV_PATH, "a", newline="", encoding="utf-8") as csv_file:
         writer = csv.writer(csv_file)
-        writer.writerow([epoch + 1, mean_loss, precision, recall, f1])
+        writer.writerow(
+            [epoch + 1, mean_loss, val_loss, precision, recall, f1]
+        )
 
 torch.save(model.state_dict(), MODEL_PATH)
 print(f"学習済みモデルを保存しました: {MODEL_PATH}")
