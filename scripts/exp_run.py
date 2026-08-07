@@ -14,7 +14,7 @@ from tqdm.auto import tqdm
 
 NUM_CLASSES = 16  # 背景(0) + 数字(10) + 記号(5)
 NUM_EPOCHS = 10
-BATCH_SIZE = 8
+BATCH_SIZE = 32
 LEARNING_RATE = 1e-3
 SCORE_THRESHOLD = 0.5
 IOU_THRESHOLD = 0.5
