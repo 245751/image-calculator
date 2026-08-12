@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "手書き数式を物体検出で読み取る画像計算機"
 requires-python = ">=3.10"
 dependencies = [
+    "ipykernel>=7.3.0",
     "matplotlib>=3.10.9",
     "pillow>=12.2.0",
     "torch>=2.12.0",
