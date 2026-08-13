@@ -16,8 +16,7 @@ NUM_CLASSES = 16  # 背景(0) + 数字(10) + 記号(5)
 NUM_EPOCHS = 10
 BATCH_SIZE = 32
 LEARNING_RATE = 1e-3
-SCORE_THRESHOLD = 0.5
-IOU_THRESHOLD = 0.5
+MAP_IOU_THRESHOLDS = tuple(i / 100 for i in range(50, 100, 5))
 MODEL_PATH = "outputs/checkpoints/ssd_calculator_state_dict.pth"
 CSV_PATH = "outputs/logs/training_results.csv"
 
@@ -126,48 +125,111 @@ optimizer = torch.optim.SGD(
     weight_decay=5e-4,
 )
 
-def evaluate_detector(model, data_loader):
+def calculate_average_precision(predictions, ground_truths, iou_threshold):
+    """1クラス分のAPを101点補間で計算する。"""
+    num_ground_truths = sum(len(boxes) for boxes in ground_truths.values())
+    if num_ground_truths == 0:
+        return None
+
+    matched = {
+        image_index: torch.zeros(len(boxes), dtype=torch.bool)
+        for image_index, boxes in ground_truths.items()
+    }
+    true_positives = []
+    false_positives = []
+
+    for score, image_index, pred_box in sorted(
+        predictions, key=lambda item: item[0], reverse=True
+    ):
+        gt_boxes = ground_truths.get(image_index)
+        if gt_boxes is None or len(gt_boxes) == 0:
+            true_positives.append(0.0)
+            false_positives.append(1.0)
+            continue
+
+        unmatched_indices = torch.where(~matched[image_index])[0]
+        if len(unmatched_indices) == 0:
+            true_positives.append(0.0)
+            false_positives.append(1.0)
+            continue
+
+        ious = box_iou(
+            pred_box.unsqueeze(0), gt_boxes[unmatched_indices]
+        ).squeeze(0)
+        best_iou, best_position = ious.max(dim=0)
+
+        if best_iou.item() >= iou_threshold:
+            matched_index = unmatched_indices[best_position]
+            matched[image_index][matched_index] = True
+            true_positives.append(1.0)
+            false_positives.append(0.0)
+        else:
+            true_positives.append(0.0)
+            false_positives.append(1.0)
+
+    if not predictions:
+        return 0.0
+
+    true_positives = torch.tensor(true_positives).cumsum(dim=0)
+    false_positives = torch.tensor(false_positives).cumsum(dim=0)
+    recalls = true_positives / num_ground_truths
+    precisions = true_positives / (true_positives + false_positives)
+
+    # COCO形式と同じく、recall 0.00〜1.00の101点で補間する。
+    interpolated_precisions = []
+    for recall_level in torch.linspace(0, 1, 101):
+        candidates = precisions[recalls >= recall_level]
+        interpolated_precisions.append(
+            candidates.max().item() if len(candidates) > 0 else 0.0
+        )
+
+    return sum(interpolated_precisions) / len(interpolated_precisions)
+
+
+def evaluate_map(model, data_loader):
+    """IoU 0.50:0.95におけるクラス平均mAPを計算する。"""
     model.eval()
-    true_positive = 0
-    false_positive = 0
-    false_negative = 0
+    predictions_by_class = {label: [] for label in range(1, NUM_CLASSES)}
+    ground_truths_by_class = {label: {} for label in range(1, NUM_CLASSES)}
+    image_index = 0
 
     with torch.inference_mode():
-        for images, targets in tqdm(data_loader, desc="Validation", leave=False):
+        for images, targets in tqdm(data_loader, desc="Validation mAP", leave=False):
             predictions = model([image.to(device) for image in images])
 
             for prediction, target in zip(predictions, targets):
-                keep = prediction["scores"].detach().cpu() >= SCORE_THRESHOLD
-                pred_boxes = prediction["boxes"].detach().cpu()[keep]
-                pred_labels = prediction["labels"].detach().cpu()[keep]
+                pred_boxes = prediction["boxes"].detach().cpu()
+                pred_labels = prediction["labels"].detach().cpu()
+                pred_scores = prediction["scores"].detach().cpu()
                 gt_boxes = target["boxes"].cpu()
                 gt_labels = target["labels"].cpu()
-                matched_gt = torch.zeros(len(gt_boxes), dtype=torch.bool)
 
-                for pred_box, pred_label in zip(pred_boxes, pred_labels):
-                    candidate_indices = torch.where(
-                        (gt_labels == pred_label) & (~matched_gt)
-                    )[0]
-                    if len(candidate_indices) == 0:
-                        false_positive += 1
-                        continue
+                for label in range(1, NUM_CLASSES):
+                    ground_truths_by_class[label][image_index] = gt_boxes[
+                        gt_labels == label
+                    ]
 
-                    ious = box_iou(
-                        pred_box.unsqueeze(0), gt_boxes[candidate_indices]
-                    ).squeeze(0)
-                    best_iou, best_position = ious.max(dim=0)
-                    if best_iou.item() >= IOU_THRESHOLD:
-                        true_positive += 1
-                        matched_gt[candidate_indices[best_position]] = True
-                    else:
-                        false_positive += 1
+                for box, label, score in zip(
+                    pred_boxes, pred_labels.tolist(), pred_scores.tolist()
+                ):
+                    predictions_by_class[label].append(
+                        (score, image_index, box)
+                    )
 
-                false_negative += (~matched_gt).sum().item()
+                image_index += 1
 
-    precision = true_positive / max(true_positive + false_positive, 1)
-    recall = true_positive / max(true_positive + false_negative, 1)
-    f1 = 2 * precision * recall / max(precision + recall, 1e-12)
-    return precision, recall, f1
+    average_precisions = []
+    for iou_threshold in MAP_IOU_THRESHOLDS:
+        for label in range(1, NUM_CLASSES):
+            average_precision = calculate_average_precision(
+                predictions_by_class[label],
+                ground_truths_by_class[label],
+                iou_threshold,
+            )
+            if average_precision is not None:
+                average_precisions.append(average_precision)
+
+    return sum(average_precisions) / max(len(average_precisions), 1)
 
 
 def evaluate_loss(model, data_loader):
@@ -212,9 +274,7 @@ print(
 # 学習開始時にCSVを新規作成し、各エポック終了時に結果を追記する
 with open(CSV_PATH, "w", newline="", encoding="utf-8") as csv_file:
     writer = csv.writer(csv_file)
-    writer.writerow(
-        ["epoch", "train_loss", "val_loss", "precision", "recall", "f1"]
-    )
+    writer.writerow(["epoch", "train_loss", "val_loss", "map"])
 
 for epoch in range(NUM_EPOCHS):
     model.train()
@@ -240,18 +300,16 @@ for epoch in range(NUM_EPOCHS):
 
     mean_loss = running_loss / len(train_loader)
     val_loss = evaluate_loss(model, val_loader)
-    precision, recall, f1 = evaluate_detector(model, val_loader)
+    mean_average_precision = evaluate_map(model, val_loader)
     print(
         f"Epoch {epoch + 1}: train_loss={mean_loss:.4f}, "
         f"val_loss={val_loss:.4f}, "
-        f"precision={precision:.4f}, recall={recall:.4f}, f1={f1:.4f}"
+        f"mAP@0.50:0.95={mean_average_precision:.4f}"
     )
 
     with open(CSV_PATH, "a", newline="", encoding="utf-8") as csv_file:
         writer = csv.writer(csv_file)
-        writer.writerow(
-            [epoch + 1, mean_loss, val_loss, precision, recall, f1]
-        )
+        writer.writerow([epoch + 1, mean_loss, val_loss, mean_average_precision])
 
 torch.save(model.state_dict(), MODEL_PATH)
 print(f"学習済みモデルを保存しました: {MODEL_PATH}")
