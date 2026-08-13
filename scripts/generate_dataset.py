@@ -435,8 +435,12 @@ def create_voc_dataset(
     font_counts=None,
     random_font_size=False,
     font_size_range=(80, 150),
-    random_layout=False
+    random_layout=False,
+    random_seed=42,
 ):
+    # 数式、フォント割り当て、文字サイズ、レイアウトを再現可能にする
+    random.seed(random_seed)
+
     # ディレクトリ準備
     img_dir = os.path.join(output_dir, "JPEGImages")
     ann_dir = os.path.join(output_dir, "Annotations")
@@ -461,6 +465,7 @@ def create_voc_dataset(
             FONTS_DIR / "Matsu-Maru.ttf",
             FONTS_DIR / "AlpenFontFree.otf",
             FONTS_DIR / "Xim-Sans-Brahmic.ttf",
+            FONTS_DIR / "dining_m0731.ttf",
         ]
     
     base_fonts = load_fonts(font_paths, font_size)
@@ -579,6 +584,7 @@ def create_voc_dataset(
     else:
         print(f"✅ ランダム生成で{actual_samples}枚のデータ生成が完了しました。保存先: {output_dir}")
     print(f"🎨 使用したフォント数: {len(base_fonts)}")
+    print(f"🎲 ランダムシード: {random_seed}")
     
     if random_font_size:
         print(f"📏 フォントサイズ範囲: {min_safe_size}-{max_safe_size}")
@@ -628,9 +634,10 @@ def create_voc_dataset(
 
 if __name__ == "__main__":
     create_voc_dataset(
-        output_dir=PROJECT_ROOT / "data" / "generated" / "generate_test",
-        num_samples=1000,
+        output_dir=PROJECT_ROOT / "data" / "generated" / "make_test",
+        num_samples=100,
         random_font_size=True,
         font_size_range=(50, 150),
         random_layout=True,
+        random_seed=42,
     )
