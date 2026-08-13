@@ -276,6 +276,9 @@ with open(CSV_PATH, "w", newline="", encoding="utf-8") as csv_file:
     writer = csv.writer(csv_file)
     writer.writerow(["epoch", "train_loss", "val_loss", "map"])
 
+best_map = float("-inf")
+best_epoch = 0
+
 for epoch in range(NUM_EPOCHS):
     model.train()
     running_loss = 0.0
@@ -311,6 +314,17 @@ for epoch in range(NUM_EPOCHS):
         writer = csv.writer(csv_file)
         writer.writerow([epoch + 1, mean_loss, val_loss, mean_average_precision])
 
-torch.save(model.state_dict(), MODEL_PATH)
-print(f"学習済みモデルを保存しました: {MODEL_PATH}")
+    if mean_average_precision > best_map:
+        best_map = mean_average_precision
+        best_epoch = epoch + 1
+        torch.save(model.state_dict(), MODEL_PATH)
+        print(
+            f"最高mAPを更新したためモデルを保存しました: "
+            f"epoch={best_epoch}, mAP={best_map:.4f}, path={MODEL_PATH}"
+        )
+
+print(
+    f"最高mAPモデル: epoch={best_epoch}, "
+    f"mAP@0.50:0.95={best_map:.4f}, path={MODEL_PATH}"
+)
 print(f"学習結果を保存しました: {CSV_PATH}")
