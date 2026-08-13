@@ -1,4 +1,6 @@
 import os
+import random
+import numpy as np
 import torch
 import xml.etree.ElementTree as ET
 from PIL import Image, ImageDraw, ImageFont
@@ -13,12 +15,29 @@ from torchvision.ops import box_iou
 from tqdm.auto import tqdm
 
 NUM_CLASSES = 16  # 背景(0) + 数字(10) + 記号(5)
+RANDOM_SEED = 42
 NUM_EPOCHS = 10
 BATCH_SIZE = 32
 LEARNING_RATE = 1e-3
 MAP_IOU_THRESHOLDS = tuple(i / 100 for i in range(50, 100, 5))
 MODEL_PATH = "outputs/checkpoints/ssd_calculator_state_dict.pth"
 CSV_PATH = "outputs/logs/training_results.csv"
+
+
+def set_random_seed(seed):
+    """学習のランダム性を再現可能にする。"""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+set_random_seed(RANDOM_SEED)
+
 
 class CustomVOCDataset(torch.utils.data.Dataset):
     def __init__(self, root, image_set='train', transforms=None, label_map=None):
@@ -84,6 +103,7 @@ train_loader = DataLoader(
     train_dataset,
     batch_size=BATCH_SIZE,
     shuffle=True,
+    generator=torch.Generator().manual_seed(RANDOM_SEED),
     num_workers=0,
     collate_fn=lambda batch: tuple(zip(*batch)),
 )
@@ -267,7 +287,8 @@ def evaluate_loss(model, data_loader):
     return running_loss / max(num_batches, 1)
 
 print(
-    f"device: {device} / train images: {len(train_dataset)} "
+    f"device: {device} / random seed: {RANDOM_SEED} "
+    f"/ train images: {len(train_dataset)} "
     f"/ val images: {len(val_dataset)}"
 )
 
