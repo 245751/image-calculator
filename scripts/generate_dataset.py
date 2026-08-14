@@ -55,10 +55,11 @@ def build_formula_pool(min_digits=1, max_digits=2, seed=42):
     return formulas
 
 # VOC形式アノテーションを保存
-def save_voc_annotation(image_id, size, bboxes, labels, save_dir):
+def save_voc_annotation(image_id, size, bboxes, labels, font_name, save_dir):
     annotation = ET.Element("annotation")
     ET.SubElement(annotation, "folder").text = "JPEGImages"
     ET.SubElement(annotation, "filename").text = f"{image_id}.jpg"
+    ET.SubElement(annotation, "font").text = font_name
     
     size_el = ET.SubElement(annotation, "size")
     ET.SubElement(size_el, "width").text = str(size[0])
@@ -539,6 +540,9 @@ def create_voc_dataset(
             current_font_size = min(font_size, int(image_size[1] * 0.6))  # 制限を緩和
         
         # フォントを作成
+        used_font_name = (
+            Path(base_font_path).name if base_font_path != "default" else "default"
+        )
         try:
             if base_font_path != "default":
                 font = ImageFont.truetype(base_font_path, current_font_size)
@@ -546,6 +550,7 @@ def create_voc_dataset(
                 font = ImageFont.load_default()
         except:
             font = ImageFont.load_default()
+            used_font_name = "default"
 
         # 画像作成
         img = Image.new("RGB", image_size, "white")
@@ -597,7 +602,14 @@ def create_voc_dataset(
 
         # 保存
         img.save(os.path.join(img_dir, f"{image_id}.jpg"))
-        save_voc_annotation(image_id, image_size, bboxes, labels, ann_dir)
+        save_voc_annotation(
+            image_id,
+            image_size,
+            bboxes,
+            labels,
+            used_font_name,
+            ann_dir,
+        )
 
     # ImageSets/Main/train.txt を保存
     with open(os.path.join(sets_dir, "train.txt"), "w") as f:
@@ -741,9 +753,9 @@ def create_train_val_datasets(
 
 if __name__ == "__main__":
     create_train_val_datasets(
-        output_root=PROJECT_ROOT / "data" / "generated" / "generate_test",
-        train_samples=8000,
-        val_samples=2000,
+        output_root=PROJECT_ROOT / "data" / "generated" / "processed",
+        train_samples=16000,
+        val_samples=4000,
         train_font_paths=TRAIN_FONT_PATHS,
         val_font_paths=VAL_FONT_PATHS,
         random_font_size=True,
