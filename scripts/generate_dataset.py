@@ -8,6 +8,31 @@ import xml.etree.ElementTree as ET
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FONTS_DIR = PROJECT_ROOT / "assets" / "fonts"
 
+TRAIN_FONT_PATHS = [
+    FONTS_DIR / "korotan.ttf",
+    FONTS_DIR / "Arial Unicode.ttf",
+    FONTS_DIR / "chirufont.ttf",
+    FONTS_DIR / "Free_yutsudu-Regular.ttf",
+    FONTS_DIR / "itijou.otf",
+    FONTS_DIR / "mikachanALL.ttc",
+    FONTS_DIR / "kousagi.ttf",
+    FONTS_DIR / "AoyagiKouzanTOTF.otf",
+    FONTS_DIR / "AoyagiSosekiFont2.otf",
+    FONTS_DIR / "norihu.otf",
+    FONTS_DIR / "Matsu-Maru.ttf",
+    FONTS_DIR / "AlpenFontFree.otf",
+    FONTS_DIR / "Kei_Ji.ttf",
+]
+
+VAL_FONT_PATHS = [
+    FONTS_DIR / "Xim-Sans-Brahmic.ttf",
+    FONTS_DIR / "dining_m0731.ttf",
+    FONTS_DIR / "YorutegakiRegular.otf",
+]
+
+ALL_FONT_PATHS = TRAIN_FONT_PATHS + VAL_FONT_PATHS
+
+
 # 重複のない数式候補を作り、固定シードで順番をランダム化する
 def build_formula_pool(min_digits=1, max_digits=2, seed=42):
     if min_digits < 1 or max_digits < min_digits:
@@ -462,22 +487,7 @@ def create_voc_dataset(
 
     # フォントの準備
     if font_paths is None:
-        font_paths = [
-            FONTS_DIR / "korotan.ttf",
-            FONTS_DIR / "Arial Unicode.ttf",
-            FONTS_DIR / "chirufont.ttf",
-            FONTS_DIR / "Free_yutsudu-Regular.ttf",
-            FONTS_DIR / "itijou.otf",
-            FONTS_DIR / "mikachanALL.ttc",
-            FONTS_DIR / "kousagi.ttf",
-            FONTS_DIR / "AoyagiKouzanTOTF.otf",
-            FONTS_DIR / "AoyagiSosekiFont2.otf",
-            FONTS_DIR / "norihu.otf",
-            FONTS_DIR / "Matsu-Maru.ttf",
-            FONTS_DIR / "AlpenFontFree.otf",
-            FONTS_DIR / "Xim-Sans-Brahmic.ttf",
-            FONTS_DIR / "dining_m0731.ttf",
-        ]
+        font_paths = ALL_FONT_PATHS
     
     base_fonts = load_fonts(font_paths, font_size)
     print(f"📝 使用可能なフォント数: {len(base_fonts)}")
@@ -622,12 +632,31 @@ def create_train_val_datasets(
     val_samples,
     min_digits=1,
     max_digits=2,
+    train_font_paths=None,
+    val_font_paths=None,
     random_seed=42,
     **dataset_options,
 ):
     """重複しない数式を使ってtrainとvalを連続生成する。"""
     if train_samples < 1 or val_samples < 1:
         raise ValueError("train_samplesとval_samplesは1以上にしてください")
+
+    if train_font_paths is None:
+        train_font_paths = TRAIN_FONT_PATHS
+    if val_font_paths is None:
+        val_font_paths = VAL_FONT_PATHS
+
+    train_font_paths = list(train_font_paths)
+    val_font_paths = list(val_font_paths)
+    if not train_font_paths or not val_font_paths:
+        raise ValueError("trainとvalには、それぞれ1個以上のフォントが必要です")
+
+    train_fonts = {Path(path).resolve() for path in train_font_paths}
+    val_fonts = {Path(path).resolve() for path in val_font_paths}
+    duplicate_fonts = train_fonts & val_fonts
+    if duplicate_fonts:
+        duplicate_names = ", ".join(sorted(path.name for path in duplicate_fonts))
+        raise ValueError(f"trainとvalでフォントが重複しています: {duplicate_names}")
 
     formula_pool = build_formula_pool(
         min_digits=min_digits,
@@ -648,16 +677,22 @@ def create_train_val_datasets(
         f"📊 数式候補{len(formula_pool)}個を "
         f"train={train_samples}個、val={val_samples}個に分割します"
     )
+    print(
+        f"🔤 フォントをtrain={len(train_font_paths)}個、"
+        f"val={len(val_font_paths)}個に分割します"
+    )
 
     create_voc_dataset(
         output_dir=Path(output_root) / "train",
         formula_list=train_formulas,
+        font_paths=train_font_paths,
         random_seed=random_seed,
         **dataset_options,
     )
     create_voc_dataset(
         output_dir=Path(output_root) / "val",
         formula_list=val_formulas,
+        font_paths=val_font_paths,
         random_seed=random_seed + 1,
         **dataset_options,
     )
@@ -706,9 +741,11 @@ def create_train_val_datasets(
 
 if __name__ == "__main__":
     create_train_val_datasets(
-        output_root=PROJECT_ROOT / "data" / "generated" / "generate_test" ,
+        output_root=PROJECT_ROOT / "data" / "generated" / "generate_test",
         train_samples=8000,
         val_samples=2000,
+        train_font_paths=TRAIN_FONT_PATHS,
+        val_font_paths=VAL_FONT_PATHS,
         random_font_size=True,
         font_size_range=(50, 150),
         random_layout=True,
