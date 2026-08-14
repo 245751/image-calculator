@@ -8,15 +8,26 @@ import xml.etree.ElementTree as ET
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FONTS_DIR = PROJECT_ROOT / "assets" / "fonts"
 
-# 数式をランダム生成（例: "12+34=", "7-2="）
-def generate_random_formula(min_digits=1, max_digits=2):
-    def random_number():
-        return ''.join(random.choices('0123456789', k=random.randint(min_digits, max_digits)))
-    
-    op = random.choice(['+', '-',"*","/"])
-    left = random_number()
-    right = random_number()
-    return f"{left}{op}{right}="
+# 重複のない数式候補を作り、固定シードで順番をランダム化する
+def build_formula_pool(min_digits=1, max_digits=2, seed=42):
+    if min_digits < 1 or max_digits < min_digits:
+        raise ValueError("桁数は 1 <= min_digits <= max_digits で指定してください")
+
+    rng = random.Random(seed)
+    min_value = 0 if min_digits == 1 else 10 ** (min_digits - 1)
+    max_value = 10 ** max_digits - 1
+    numbers = range(min_value, max_value + 1)
+
+    formulas = [
+        f"{left}{operator}{right}="
+        for left in numbers
+        for right in numbers
+        for operator in ["+", "-", "*", "/"]
+        if operator != "/" or right != 0
+    ]
+
+    rng.shuffle(formulas)
+    return formulas
 
 # VOC形式アノテーションを保存
 def save_voc_annotation(image_id, size, bboxes, labels, save_dir):
@@ -477,8 +488,19 @@ def create_voc_dataset(
         formulas = formula_list
         actual_samples = len(formulas)
     else:
-        formulas = [generate_random_formula() for _ in range(num_samples)]
+        formula_pool = build_formula_pool(seed=random_seed)
+        if num_samples > len(formula_pool):
+            raise ValueError(
+                f"num_samples={num_samples} は重複なしで生成できる"
+                f"数式候補数={len(formula_pool)}を超えています"
+            )
+
+        formulas = formula_pool[:num_samples]
         actual_samples = num_samples
+        print(
+            f"🧮 数式候補{len(formula_pool)}個から"
+            f"重複なしで{actual_samples}個を選択しました"
+        )
 
     font_assignment = create_font_assignment(
         num_fonts=len(base_fonts),
@@ -634,8 +656,8 @@ def create_voc_dataset(
 
 if __name__ == "__main__":
     create_voc_dataset(
-        output_dir=PROJECT_ROOT / "data" / "generated" / "make_test",
-        num_samples=100,
+        output_dir=PROJECT_ROOT / "data" / "generated" / "val",
+        num_samples=4000,
         random_font_size=True,
         font_size_range=(50, 150),
         random_layout=True,
