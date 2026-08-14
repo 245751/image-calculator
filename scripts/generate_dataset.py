@@ -615,6 +615,56 @@ def create_voc_dataset(
     
     print(f"🛡️ 枠はみ出し防止機能: 有効")
 
+
+def create_train_val_datasets(
+    output_root,
+    train_samples,
+    val_samples,
+    min_digits=1,
+    max_digits=2,
+    random_seed=42,
+    **dataset_options,
+):
+    """重複しない数式を使ってtrainとvalを連続生成する。"""
+    if train_samples < 1 or val_samples < 1:
+        raise ValueError("train_samplesとval_samplesは1以上にしてください")
+
+    formula_pool = build_formula_pool(
+        min_digits=min_digits,
+        max_digits=max_digits,
+        seed=random_seed,
+    )
+    total_samples = train_samples + val_samples
+    if total_samples > len(formula_pool):
+        raise ValueError(
+            f"trainとvalの合計={total_samples}は、重複なしで生成できる"
+            f"数式候補数={len(formula_pool)}を超えています"
+        )
+
+    train_formulas = formula_pool[:train_samples]
+    val_formulas = formula_pool[train_samples:total_samples]
+
+    print(
+        f"📊 数式候補{len(formula_pool)}個を "
+        f"train={train_samples}個、val={val_samples}個に分割します"
+    )
+
+    create_voc_dataset(
+        output_dir=Path(output_root) / "train",
+        formula_list=train_formulas,
+        random_seed=random_seed,
+        **dataset_options,
+    )
+    create_voc_dataset(
+        output_dir=Path(output_root) / "val",
+        formula_list=val_formulas,
+        random_seed=random_seed + 1,
+        **dataset_options,
+    )
+
+    print("✅ trainとvalで重複しないデータセットを生成しました")
+
+
 # 使用例:
 
 
@@ -655,9 +705,10 @@ def create_voc_dataset(
 # 実行
 
 if __name__ == "__main__":
-    create_voc_dataset(
-        output_dir=PROJECT_ROOT / "data" / "generated" / "val",
-        num_samples=4000,
+    create_train_val_datasets(
+        output_root=PROJECT_ROOT / "data" / "generated" / "generate_test" ,
+        train_samples=8000,
+        val_samples=2000,
         random_font_size=True,
         font_size_range=(50, 150),
         random_layout=True,
