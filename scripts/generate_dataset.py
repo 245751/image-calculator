@@ -47,8 +47,7 @@ def build_formula_pool(min_digits=1, max_digits=2, seed=42):
         f"{left}{operator}{right}="
         for left in numbers
         for right in numbers
-        for operator in ["+", "-", "*", "/"]
-        if operator != "/" or right != 0
+        for operator in ["+", "-", "x"]
     ]
 
     rng.shuffle(formulas)
@@ -411,7 +410,7 @@ def create_voc_dataset(
                 x, y, char = pos
                 draw.text((x, y), char, font=font, fill="black")
                 
-                if char.isdigit() or char in "+-*/=()":
+                if char.isdigit() or char in "+-x=()":
                     labels.append(char)
         else:
             # 従来の水平レイアウト（改善版）
@@ -440,7 +439,7 @@ def create_voc_dataset(
 
                 draw.text((xmin, ymin), char, font=font, fill="black")
 
-                if char.isdigit() or char in "+-*/=()":
+                if char.isdigit() or char in "+-x=()":
                     labels.append(char)
                     bboxes.append([xmin, ymin, xmax, ymax])
 
@@ -568,7 +567,7 @@ def create_train_val_datasets(
 # 1. リストを指定する場合
 # create_voc_dataset(
 #     output_dir="dataset_custom", 
-#     formula_list=["12+34=", "3*(1+2)", "(5-2)*4=", "8/(2+2)"]
+#     formula_list=["12+34=", "3x(1+2)", "(5-2)x4="]
 # )
 
 # 2. 従来通りランダム生成する場合
@@ -599,7 +598,7 @@ def create_train_val_datasets(
 
 if __name__ == "__main__":
     create_train_val_datasets(
-        output_root=PROJECT_ROOT / "data" / "generated" / "processed",
+        output_root=PROJECT_ROOT / "data" / "generated" / "make_test",
         train_samples=16000,
         val_samples=4000,
         train_font_paths=TRAIN_FONT_PATHS,
