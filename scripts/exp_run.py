@@ -14,7 +14,7 @@ from torchvision.models.detection.ssd import SSDClassificationHead
 from torchvision.ops import box_iou
 from tqdm.auto import tqdm
 
-NUM_CLASSES = 16  # 背景(0) + 数字(10) + 記号(5)
+NUM_CLASSES = 15  # 背景(0) + 数字(10) + 記号(4: +, -, x, =)
 RANDOM_SEED = 42
 NUM_EPOCHS = 10
 BATCH_SIZE = 32
@@ -48,7 +48,7 @@ class CustomVOCDataset(torch.utils.data.Dataset):
         self.label_map = label_map or {
             '0': 1, '1': 2, '2': 3, '3': 4, '4': 5, '5': 6,
             '6': 7, '7': 8, '8': 9, '9': 10,
-            '+': 11, '-': 12, '*': 13, '/': 14, '=': 15
+            '+': 11, '-': 12, 'x': 13, '=': 14
         }
 
         # image_set (train.txtなど) を読み込む
@@ -122,7 +122,7 @@ val_loader = DataLoader(
     collate_fn=lambda batch: tuple(zip(*batch)),
 )
 
-# COCOで事前学習済みのSSD300-VGG16を使い、分類ヘッドだけ16クラス用に交換する
+# COCOで事前学習済みのSSD300-VGG16を使い、分類ヘッドだけ15クラス用に交換する
 model = ssd300_vgg16(weights=SSD300_VGG16_Weights.DEFAULT)
 model.head.classification_head = SSDClassificationHead(
     retrieve_out_channels(model.backbone, (300, 300)),
