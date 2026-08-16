@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 uv.lock
 *.egg-info/
+send_and_receive_file.sh
 
 # 容量の大きい生成物
 data/
