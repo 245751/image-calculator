@@ -1,6 +1,6 @@
+import argparse
 import os
 import random
-from datetime import datetime
 
 import numpy as np
 import torch
@@ -22,15 +22,7 @@ NUM_EPOCHS = 10
 BATCH_SIZE = 32
 LEARNING_RATE = 1e-3
 MAP_IOU_THRESHOLDS = tuple(i / 100 for i in range(50, 100, 5))
-RUN_ID = os.environ.get("SLURM_JOB_ID", datetime.now().strftime("%Y%m%d_%H%M%S"))
-RUN_OUTPUT_DIR = os.path.join("outputs", "logs", f"run_{RUN_ID}")
-MODEL_PATH_TEMPLATE = os.path.join(
-    RUN_OUTPUT_DIR, "ssd_calculator_seed{seed}_state_dict.pth"
-)
-CSV_PATH_TEMPLATE = os.path.join(
-    RUN_OUTPUT_DIR, "training_results_seed{seed}.csv"
-)
-SUMMARY_CSV_PATH = os.path.join(RUN_OUTPUT_DIR, "training_seed_summary.csv")
+OUTPUT_BASE_DIR = os.path.join("outputs", "logs")
 
 
 def set_random_seed(seed):
@@ -43,6 +35,28 @@ def set_random_seed(seed):
         torch.cuda.manual_seed_all(seed)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="3つのseedでSSDを学習します。"
+    )
+    parser.add_argument(
+        "--output-dir-name",
+        required=True,
+        help="outputs/logsの下に作成する学習結果ディレクトリ名",
+    )
+    args = parser.parse_args()
+
+    directory_name = args.output_dir_name
+    if (
+        not directory_name
+        or directory_name in {".", ".."}
+        or "/" in directory_name
+        or "\\" in directory_name
+    ):
+        parser.error("--output-dir-nameにはディレクトリ名だけを指定してください")
+    return args
 
 
 class CustomVOCDataset(torch.utils.data.Dataset):
@@ -289,7 +303,7 @@ def create_model():
     return model.to(device)
 
 
-def train_for_seed(seed):
+def train_for_seed(seed, model_output_dir, csv_output_dir):
     """指定seedで学習し、そのseed内で最高mAPのモデルを保存する。"""
     set_random_seed(seed)
     train_loader = create_train_loader(seed)
@@ -301,8 +315,12 @@ def train_for_seed(seed):
         weight_decay=5e-4,
     )
 
-    model_path = MODEL_PATH_TEMPLATE.format(seed=seed)
-    csv_path = CSV_PATH_TEMPLATE.format(seed=seed)
+    model_path = os.path.join(
+        model_output_dir, f"ssd_calculator_seed{seed}_state_dict.pth"
+    )
+    csv_path = os.path.join(
+        csv_output_dir, f"training_results_seed{seed}.csv"
+    )
     os.makedirs(os.path.dirname(model_path), exist_ok=True)
     os.makedirs(os.path.dirname(csv_path), exist_ok=True)
 
@@ -383,17 +401,24 @@ def train_for_seed(seed):
 
 
 if __name__ == "__main__":
-    os.makedirs(RUN_OUTPUT_DIR, exist_ok=True)
-    print(f"学習結果の保存先: {RUN_OUTPUT_DIR}")
-    with open(SUMMARY_CSV_PATH, "w", newline="", encoding="utf-8") as csv_file:
+    args = parse_args()
+    run_output_dir = os.path.join(OUTPUT_BASE_DIR, args.output_dir_name)
+    model_output_dir = os.path.join(run_output_dir, "model")
+    csv_output_dir = os.path.join(run_output_dir, "csv")
+    summary_csv_path = os.path.join(csv_output_dir, "training_seed_summary.csv")
+    os.makedirs(model_output_dir, exist_ok=True)
+    os.makedirs(csv_output_dir, exist_ok=True)
+
+    print(f"学習結果の保存先: {run_output_dir}")
+    with open(summary_csv_path, "w", newline="", encoding="utf-8") as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow(["seed", "best_epoch", "best_map", "model_path", "csv_path"])
 
     seed_results = []
     for seed in RANDOM_SEEDS:
-        result = train_for_seed(seed)
+        result = train_for_seed(seed, model_output_dir, csv_output_dir)
         seed_results.append(result)
-        with open(SUMMARY_CSV_PATH, "a", newline="", encoding="utf-8") as csv_file:
+        with open(summary_csv_path, "a", newline="", encoding="utf-8") as csv_file:
             writer = csv.writer(csv_file)
             writer.writerow(
                 [
@@ -413,4 +438,4 @@ if __name__ == "__main__":
         f"\n3 seedsの学習完了: mean={np.mean(best_maps):.4f}, "
         f"std={np.std(best_maps):.4f}"
     )
-    print(f"seed別サマリー: {SUMMARY_CSV_PATH}")
+    print(f"seed別サマリー: {summary_csv_path}")
