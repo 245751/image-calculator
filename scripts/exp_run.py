@@ -1,5 +1,7 @@
 import os
 import random
+from datetime import datetime
+
 import numpy as np
 import torch
 import xml.etree.ElementTree as ET
@@ -15,13 +17,20 @@ from torchvision.ops import box_iou
 from tqdm.auto import tqdm
 
 NUM_CLASSES = 15  # 背景(0) + 数字(10) + 記号(4: +, -, x, =)
-RANDOM_SEED = 42
+RANDOM_SEEDS = (42, 43, 44)
 NUM_EPOCHS = 10
 BATCH_SIZE = 32
 LEARNING_RATE = 1e-3
 MAP_IOU_THRESHOLDS = tuple(i / 100 for i in range(50, 100, 5))
-MODEL_PATH = "outputs/checkpoints/ssd_calculator_state_dict.pth"
-CSV_PATH = "outputs/logs/training_results.csv"
+RUN_ID = os.environ.get("SLURM_JOB_ID", datetime.now().strftime("%Y%m%d_%H%M%S"))
+RUN_OUTPUT_DIR = os.path.join("outputs", "logs", f"run_{RUN_ID}")
+MODEL_PATH_TEMPLATE = os.path.join(
+    RUN_OUTPUT_DIR, "ssd_calculator_seed{seed}_state_dict.pth"
+)
+CSV_PATH_TEMPLATE = os.path.join(
+    RUN_OUTPUT_DIR, "training_results_seed{seed}.csv"
+)
+SUMMARY_CSV_PATH = os.path.join(RUN_OUTPUT_DIR, "training_seed_summary.csv")
 
 
 def set_random_seed(seed):
@@ -34,9 +43,6 @@ def set_random_seed(seed):
         torch.cuda.manual_seed_all(seed)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-
-
-set_random_seed(RANDOM_SEED)
 
 
 class CustomVOCDataset(torch.utils.data.Dataset):
@@ -99,15 +105,6 @@ train_dataset = CustomVOCDataset(
     image_set="train",
     transforms=transform,
 )
-train_loader = DataLoader(
-    train_dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=True,
-    generator=torch.Generator().manual_seed(RANDOM_SEED),
-    num_workers=0,
-    collate_fn=lambda batch: tuple(zip(*batch)),
-)
-
 # val/ImageSets/Main 内の分割ファイル名は train.txt
 val_dataset = CustomVOCDataset(
     root="data/processed/val",
@@ -122,28 +119,12 @@ val_loader = DataLoader(
     collate_fn=lambda batch: tuple(zip(*batch)),
 )
 
-# COCOで事前学習済みのSSD300-VGG16を使い、分類ヘッドだけ15クラス用に交換する
-model = ssd300_vgg16(weights=SSD300_VGG16_Weights.DEFAULT)
-model.head.classification_head = SSDClassificationHead(
-    retrieve_out_channels(model.backbone, (300, 300)),
-    model.anchor_generator.num_anchors_per_location(),
-    NUM_CLASSES,
-)
-
 if torch.backends.mps.is_available():
     device = torch.device("mps")
 elif torch.cuda.is_available():
     device = torch.device("cuda")
 else:
     device = torch.device("cpu")
-
-model.to(device)
-optimizer = torch.optim.SGD(
-    model.parameters(),
-    lr=LEARNING_RATE,
-    momentum=0.9,
-    weight_decay=5e-4,
-)
 
 def calculate_average_precision(predictions, ground_truths, iou_threshold):
     """1クラス分のAPを101点補間で計算する。"""
@@ -286,66 +267,150 @@ def evaluate_loss(model, data_loader):
 
     return running_loss / max(num_batches, 1)
 
-print(
-    f"device: {device} / random seed: {RANDOM_SEED} "
-    f"/ train images: {len(train_dataset)} "
-    f"/ val images: {len(val_dataset)}"
-)
-
-# 学習開始時にCSVを新規作成し、各エポック終了時に結果を追記する
-with open(CSV_PATH, "w", newline="", encoding="utf-8") as csv_file:
-    writer = csv.writer(csv_file)
-    writer.writerow(["epoch", "train_loss", "val_loss", "map"])
-
-best_map = float("-inf")
-best_epoch = 0
-
-for epoch in range(NUM_EPOCHS):
-    model.train()
-    running_loss = 0.0
-
-    progress = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{NUM_EPOCHS}")
-    for images, targets in progress:
-        images = [image.to(device) for image in images]
-        targets = [
-            {key: value.to(device) for key, value in target.items()}
-            for target in targets
-        ]
-
-        loss_dict = model(images, targets)
-        loss = sum(loss_dict.values())
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        running_loss += loss.item()
-        progress.set_postfix(loss=f"{loss.item():.4f}")
-
-    mean_loss = running_loss / len(train_loader)
-    val_loss = evaluate_loss(model, val_loader)
-    mean_average_precision = evaluate_map(model, val_loader)
-    print(
-        f"Epoch {epoch + 1}: train_loss={mean_loss:.4f}, "
-        f"val_loss={val_loss:.4f}, "
-        f"mAP@0.50:0.95={mean_average_precision:.4f}"
+def create_train_loader(seed):
+    return DataLoader(
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        generator=torch.Generator().manual_seed(seed),
+        num_workers=0,
+        collate_fn=lambda batch: tuple(zip(*batch)),
     )
 
-    with open(CSV_PATH, "a", newline="", encoding="utf-8") as csv_file:
-        writer = csv.writer(csv_file)
-        writer.writerow([epoch + 1, mean_loss, val_loss, mean_average_precision])
 
-    if mean_average_precision > best_map:
-        best_map = mean_average_precision
-        best_epoch = epoch + 1
-        torch.save(model.state_dict(), MODEL_PATH)
+def create_model():
+    """COCO事前学習済みSSDを15クラス用に作り直す。"""
+    model = ssd300_vgg16(weights=SSD300_VGG16_Weights.DEFAULT)
+    model.head.classification_head = SSDClassificationHead(
+        retrieve_out_channels(model.backbone, (300, 300)),
+        model.anchor_generator.num_anchors_per_location(),
+        NUM_CLASSES,
+    )
+    return model.to(device)
+
+
+def train_for_seed(seed):
+    """指定seedで学習し、そのseed内で最高mAPのモデルを保存する。"""
+    set_random_seed(seed)
+    train_loader = create_train_loader(seed)
+    model = create_model()
+    optimizer = torch.optim.SGD(
+        model.parameters(),
+        lr=LEARNING_RATE,
+        momentum=0.9,
+        weight_decay=5e-4,
+    )
+
+    model_path = MODEL_PATH_TEMPLATE.format(seed=seed)
+    csv_path = CSV_PATH_TEMPLATE.format(seed=seed)
+    os.makedirs(os.path.dirname(model_path), exist_ok=True)
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+
+    print(
+        f"\n===== seed {seed} の学習を開始 =====\n"
+        f"device: {device} / train images: {len(train_dataset)} "
+        f"/ val images: {len(val_dataset)}"
+    )
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(["seed", "epoch", "train_loss", "val_loss", "map"])
+
+    best_map = float("-inf")
+    best_epoch = 0
+
+    for epoch in range(NUM_EPOCHS):
+        model.train()
+        running_loss = 0.0
+
+        progress = tqdm(
+            train_loader,
+            desc=f"Seed {seed} | Epoch {epoch + 1}/{NUM_EPOCHS}",
+        )
+        for images, targets in progress:
+            images = [image.to(device) for image in images]
+            targets = [
+                {key: value.to(device) for key, value in target.items()}
+                for target in targets
+            ]
+
+            loss_dict = model(images, targets)
+            loss = sum(loss_dict.values())
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            running_loss += loss.item()
+            progress.set_postfix(loss=f"{loss.item():.4f}")
+
+        mean_loss = running_loss / len(train_loader)
+        val_loss = evaluate_loss(model, val_loader)
+        mean_average_precision = evaluate_map(model, val_loader)
         print(
-            f"最高mAPを更新したためモデルを保存しました: "
-            f"epoch={best_epoch}, mAP={best_map:.4f}, path={MODEL_PATH}"
+            f"Seed {seed} / Epoch {epoch + 1}: "
+            f"train_loss={mean_loss:.4f}, val_loss={val_loss:.4f}, "
+            f"mAP@0.50:0.95={mean_average_precision:.4f}"
         )
 
-print(
-    f"最高mAPモデル: epoch={best_epoch}, "
-    f"mAP@0.50:0.95={best_map:.4f}, path={MODEL_PATH}"
-)
-print(f"学習結果を保存しました: {CSV_PATH}")
+        with open(csv_path, "a", newline="", encoding="utf-8") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(
+                [seed, epoch + 1, mean_loss, val_loss, mean_average_precision]
+            )
+
+        if mean_average_precision > best_map:
+            best_map = mean_average_precision
+            best_epoch = epoch + 1
+            torch.save(model.state_dict(), model_path)
+            print(
+                f"最高mAPを更新したためモデルを保存しました: "
+                f"seed={seed}, epoch={best_epoch}, "
+                f"mAP={best_map:.4f}, path={model_path}"
+            )
+
+    print(
+        f"seed {seed} の最高mAPモデル: epoch={best_epoch}, "
+        f"mAP@0.50:0.95={best_map:.4f}, path={model_path}"
+    )
+    return {
+        "seed": seed,
+        "best_epoch": best_epoch,
+        "best_map": best_map,
+        "model_path": model_path,
+        "csv_path": csv_path,
+    }
+
+
+if __name__ == "__main__":
+    os.makedirs(RUN_OUTPUT_DIR, exist_ok=True)
+    print(f"学習結果の保存先: {RUN_OUTPUT_DIR}")
+    with open(SUMMARY_CSV_PATH, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(["seed", "best_epoch", "best_map", "model_path", "csv_path"])
+
+    seed_results = []
+    for seed in RANDOM_SEEDS:
+        result = train_for_seed(seed)
+        seed_results.append(result)
+        with open(SUMMARY_CSV_PATH, "a", newline="", encoding="utf-8") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(
+                [
+                    result["seed"],
+                    result["best_epoch"],
+                    result["best_map"],
+                    result["model_path"],
+                    result["csv_path"],
+                ]
+            )
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    best_maps = [result["best_map"] for result in seed_results]
+    print(
+        f"\n3 seedsの学習完了: mean={np.mean(best_maps):.4f}, "
+        f"std={np.std(best_maps):.4f}"
+    )
+    print(f"seed別サマリー: {SUMMARY_CSV_PATH}")
