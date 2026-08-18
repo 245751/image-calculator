@@ -166,6 +166,42 @@ def calculate_text_dimensions(text, font):
     
     return width, actual_height
 
+
+def calculate_visible_glyph_box(
+    char,
+    position,
+    font,
+    image_size,
+    padding=50,
+    threshold=240,
+):
+    """実際に描画される文字ピクセルから、余白付きの矩形を計算する。"""
+    if padding < 0:
+        raise ValueError("paddingは0以上にしてください")
+    if not 1 <= threshold <= 255:
+        raise ValueError("thresholdは1以上255以下にしてください")
+
+    # 文字ごとに独立した画像へ同じ条件で描画することで、隣の文字や
+    # ボックス同士の重なりに影響されず、その文字の可視領域だけを測る。
+    glyph_image = Image.new("L", image_size, "white")
+    glyph_draw = ImageDraw.Draw(glyph_image)
+    glyph_draw.text(position, char, font=font, fill="black")
+    glyph_mask = glyph_image.point(
+        lambda value: 255 if value < threshold else 0
+    )
+    ink_box = glyph_mask.getbbox()
+    if ink_box is None:
+        raise ValueError(f"文字 {char!r} の可視ピクセルを検出できませんでした")
+
+    left, top, right, bottom = ink_box
+    width, height = image_size
+    return [
+        max(0, left - padding),
+        max(0, top - padding),
+        min(width, right + padding),
+        min(height, bottom + padding),
+    ]
+
 def generate_random_layout_dynamic(formula, font, image_size, font_size, min_spacing=5):
     """
     フォントサイズに応じて動的にマージンを調整するランダム配置
@@ -319,9 +355,16 @@ def create_voc_dataset(
     font_size_range=(80, 150),
     random_layout=False,
     random_seed=42,
+    box_padding=15,
+    glyph_threshold=240,
 ):
     # 数式、フォント割り当て、文字サイズ、レイアウトを再現可能にする
     random.seed(random_seed)
+
+    if box_padding < 0:
+        raise ValueError("box_paddingは0以上にしてください")
+    if not 1 <= glyph_threshold <= 255:
+        raise ValueError("glyph_thresholdは1以上255以下にしてください")
 
     # ディレクトリ準備
     img_dir = os.path.join(output_dir, "JPEGImages")
@@ -403,15 +446,26 @@ def create_voc_dataset(
 
         if random_layout:
             # ランダムレイアウトで配置（マージンを動的に調整）
-            positions, bboxes = generate_random_layout_dynamic(formula, font, image_size, current_font_size)
+            positions, _layout_boxes = generate_random_layout_dynamic(formula, font, image_size, current_font_size)
+            bboxes = []
             labels = []
             
-            for pos, bbox in zip(positions, bboxes):
+            for pos in positions:
                 x, y, char = pos
                 draw.text((x, y), char, font=font, fill="black")
                 
                 if char.isdigit() or char in "+-x=()":
                     labels.append(char)
+                    bboxes.append(
+                        calculate_visible_glyph_box(
+                            char,
+                            (x, y),
+                            font,
+                            image_size,
+                            padding=box_padding,
+                            threshold=glyph_threshold,
+                        )
+                    )
         else:
             # 従来の水平レイアウト（改善版）
             x_offset = 20  # マージンを小さく
@@ -441,7 +495,16 @@ def create_voc_dataset(
 
                 if char.isdigit() or char in "+-x=()":
                     labels.append(char)
-                    bboxes.append([xmin, ymin, xmax, ymax])
+                    bboxes.append(
+                        calculate_visible_glyph_box(
+                            char,
+                            (xmin, ymin),
+                            font,
+                            image_size,
+                            padding=box_padding,
+                            threshold=glyph_threshold,
+                        )
+                    )
 
                 x_offset += char_width + 15  # 間隔を少し縮める
 
@@ -474,6 +537,8 @@ def create_voc_dataset(
         print(f"✅ ランダム生成で{actual_samples}枚のデータ生成が完了しました。保存先: {output_dir}")
     print(f"🎨 使用したフォント数: {len(base_fonts)}")
     print(f"🎲 ランダムシード: {random_seed}")
+    print(f"📦 文字ボックス余白: {box_padding}px")
+    print(f"🎯 文字ピクセル閾値: {glyph_threshold}")
     
     if random_font_size:
         print(f"📏 フォントサイズ範囲: {min_safe_size}-{max_safe_size}")
@@ -598,7 +663,7 @@ def create_train_val_datasets(
 
 if __name__ == "__main__":
     create_train_val_datasets(
-        output_root=PROJECT_ROOT / "data" / "generated" / "make_test",
+        output_root=PROJECT_ROOT / "data" / "generated" / "processed",
         train_samples=16000,
         val_samples=4000,
         train_font_paths=TRAIN_FONT_PATHS,
