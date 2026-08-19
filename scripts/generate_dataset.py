@@ -9,28 +9,36 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FONTS_DIR = PROJECT_ROOT / "assets" / "fonts"
 
 TRAIN_FONT_PATHS = [
-    FONTS_DIR / "korotan.ttf",
+    FONTS_DIR / "ArchitectsDaughter-Regular.ttf",
     FONTS_DIR / "Arial Unicode.ttf",
-    FONTS_DIR / "chirufont.ttf",
-    FONTS_DIR / "Free_yutsudu-Regular.ttf",
-    FONTS_DIR / "itijou.otf",
-    FONTS_DIR / "mikachanALL.ttc",
-    FONTS_DIR / "kousagi.ttf",
-    FONTS_DIR / "AoyagiKouzanTOTF.otf",
-    FONTS_DIR / "AoyagiSosekiFont2.otf",
-    FONTS_DIR / "norihu.otf",
-    FONTS_DIR / "Matsu-Maru.ttf",
-    FONTS_DIR / "AlpenFontFree.otf",
-    FONTS_DIR / "Kei_Ji.ttf",
+    FONTS_DIR / "ComingSoon-Regular.ttf",
+    FONTS_DIR / "CoveredByYourGrace-Regular.ttf",
+    FONTS_DIR / "GochiHand-Regular.ttf",
+    FONTS_DIR / "HachiMaruPop-Regular.ttf",
+    FONTS_DIR / "IndieFlower-Regular.ttf",
+    FONTS_DIR / "JustAnotherHand-Regular.ttf",
+    FONTS_DIR / "Kalam-Light.ttf",
+    FONTS_DIR / "PatrickHand-Regular.ttf",
+    FONTS_DIR / "RocknRollOne-Regular.ttf",
+    FONTS_DIR / "Schoolbell-Regular.ttf",
+    FONTS_DIR / "ShadowsIntoLight-Regular.ttf",
+    FONTS_DIR / "ShortStack-Regular.ttf",
+    FONTS_DIR / "Yomogi-Regular.ttf",
+    FONTS_DIR / "YujiBoku-Regular.ttf",
+    FONTS_DIR / "YuseiMagic-Regular.ttf",
 ]
 
 VAL_FONT_PATHS = [
-    FONTS_DIR / "Xim-Sans-Brahmic.ttf",
-    FONTS_DIR / "dining_m0731.ttf",
-    FONTS_DIR / "YorutegakiRegular.otf",
+    FONTS_DIR / "Caveat-Bold.ttf",
+    FONTS_DIR / "GloriaHallelujah-Regular.ttf",
+    FONTS_DIR / "KleeOne-Regular.ttf",
+    FONTS_DIR / "ZenKurenaido-Regular.ttf",
 ]
 
 ALL_FONT_PATHS = TRAIN_FONT_PATHS + VAL_FONT_PATHS
+
+OPERATORS = ("+", "-", "×", "÷")
+ANNOTATION_CHARACTERS = set(OPERATORS) | {"=", "(", ")"}
 
 
 # 重複のない数式候補を作り、固定シードで順番をランダム化する
@@ -47,7 +55,7 @@ def build_formula_pool(min_digits=1, max_digits=2, seed=42):
         f"{left}{operator}{right}="
         for left in numbers
         for right in numbers
-        for operator in ["+", "-", "x"]
+        for operator in OPERATORS
     ]
 
     rng.shuffle(formulas)
@@ -454,7 +462,7 @@ def create_voc_dataset(
                 x, y, char = pos
                 draw.text((x, y), char, font=font, fill="black")
                 
-                if char.isdigit() or char in "+-x=()":
+                if char.isdigit() or char in ANNOTATION_CHARACTERS:
                     labels.append(char)
                     bboxes.append(
                         calculate_visible_glyph_box(
@@ -493,7 +501,7 @@ def create_voc_dataset(
 
                 draw.text((xmin, ymin), char, font=font, fill="black")
 
-                if char.isdigit() or char in "+-x=()":
+                if char.isdigit() or char in ANNOTATION_CHARACTERS:
                     labels.append(char)
                     bboxes.append(
                         calculate_visible_glyph_box(
@@ -632,7 +640,7 @@ def create_train_val_datasets(
 # 1. リストを指定する場合
 # create_voc_dataset(
 #     output_dir="dataset_custom", 
-#     formula_list=["12+34=", "3x(1+2)", "(5-2)x4="]
+#     formula_list=["12+34=", "3×(1+2)", "8÷4=", "(5-2)×4="]
 # )
 
 # 2. 従来通りランダム生成する場合
@@ -669,7 +677,7 @@ if __name__ == "__main__":
         train_font_paths=TRAIN_FONT_PATHS,
         val_font_paths=VAL_FONT_PATHS,
         random_font_size=True,
-        font_size_range=(50, 150),
+        font_size_range=(50, 130),
         random_layout=True,
         random_seed=42,
     )
