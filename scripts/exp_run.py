@@ -1,5 +1,6 @@
 import argparse
 from contextlib import nullcontext
+import math
 import os
 import random
 
@@ -19,9 +20,11 @@ from tqdm.auto import tqdm
 
 NUM_CLASSES = 16  # 背景(0) + 数字(10) + 記号(5: +, -, ×, ÷, =)
 RANDOM_SEEDS = (42, 43, 44)
-NUM_EPOCHS = 20
-BATCH_SIZE = 32
-LEARNING_RATE = 1e-3
+NUM_EPOCHS = 100
+BATCH_SIZE = 256
+LEARNING_RATE = 4e-3
+WARMUP_EPOCHS = 1
+MIN_LEARNING_RATE = 1e-5
 MAP_IOU_THRESHOLDS = tuple(i / 100 for i in range(50, 100, 5))
 OUTPUT_BASE_DIR = os.path.join("outputs", "logs")
 
@@ -332,6 +335,23 @@ def train_for_seed(seed, model_output_dir, csv_output_dir):
         momentum=0.9,
         weight_decay=5e-4,
     )
+
+    def learning_rate_multiplier(epoch):
+        if epoch < WARMUP_EPOCHS:
+            warmup_progress = epoch / WARMUP_EPOCHS
+            return 0.1 + 0.9 * warmup_progress
+
+        cosine_epochs = NUM_EPOCHS - WARMUP_EPOCHS
+        cosine_progress = (epoch - WARMUP_EPOCHS) / max(cosine_epochs - 1, 1)
+        minimum_multiplier = MIN_LEARNING_RATE / LEARNING_RATE
+        return minimum_multiplier + (1.0 - minimum_multiplier) * 0.5 * (
+            1.0 + math.cos(math.pi * cosine_progress)
+        )
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lr_lambda=learning_rate_multiplier,
+    )
     use_amp = device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
@@ -353,7 +373,9 @@ def train_for_seed(seed, model_output_dir, csv_output_dir):
 
     with open(csv_path, "w", newline="", encoding="utf-8") as csv_file:
         writer = csv.writer(csv_file)
-        writer.writerow(["seed", "epoch", "train_loss", "val_loss", "map"])
+        writer.writerow(
+            ["seed", "epoch", "learning_rate", "train_loss", "val_loss", "map"]
+        )
 
     best_map = float("-inf")
     best_epoch = 0
@@ -361,6 +383,7 @@ def train_for_seed(seed, model_output_dir, csv_output_dir):
     for epoch in range(NUM_EPOCHS):
         model.train()
         running_loss = 0.0
+        current_learning_rate = optimizer.param_groups[0]["lr"]
 
         progress = tqdm(
             train_loader,
@@ -391,14 +414,22 @@ def train_for_seed(seed, model_output_dir, csv_output_dir):
         mean_average_precision = evaluate_map(model, val_loader)
         print(
             f"Seed {seed} / Epoch {epoch + 1}: "
-            f"train_loss={mean_loss:.4f}, val_loss={val_loss:.4f}, "
+            f"lr={current_learning_rate:.6g}, train_loss={mean_loss:.4f}, "
+            f"val_loss={val_loss:.4f}, "
             f"mAP@0.50:0.95={mean_average_precision:.4f}"
         )
 
         with open(csv_path, "a", newline="", encoding="utf-8") as csv_file:
             writer = csv.writer(csv_file)
             writer.writerow(
-                [seed, epoch + 1, mean_loss, val_loss, mean_average_precision]
+                [
+                    seed,
+                    epoch + 1,
+                    current_learning_rate,
+                    mean_loss,
+                    val_loss,
+                    mean_average_precision,
+                ]
             )
 
         if mean_average_precision > best_map:
@@ -410,6 +441,8 @@ def train_for_seed(seed, model_output_dir, csv_output_dir):
                 f"seed={seed}, epoch={best_epoch}, "
                 f"mAP={best_map:.4f}, path={model_path}"
             )
+
+        scheduler.step()
 
     print(
         f"seed {seed} の最高mAPモデル: epoch={best_epoch}, "
