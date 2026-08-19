@@ -1,4 +1,5 @@
 import argparse
+from contextlib import nullcontext
 import os
 import random
 
@@ -147,6 +148,14 @@ elif torch.cuda.is_available():
 else:
     device = torch.device("cpu")
 
+
+def amp_autocast():
+    """CUDAではfloat16の自動混合精度を有効にする。"""
+    if device.type == "cuda":
+        return torch.amp.autocast(device_type="cuda", dtype=torch.float16)
+    return nullcontext()
+
+
 def calculate_average_precision(predictions, ground_truths, iou_threshold):
     """1クラス分のAPを101点補間で計算する。"""
     num_ground_truths = sum(len(boxes) for boxes in ground_truths.values())
@@ -217,7 +226,8 @@ def evaluate_map(model, data_loader):
 
     with torch.inference_mode():
         for images, targets in tqdm(data_loader, desc="Validation mAP", leave=False):
-            predictions = model([image.to(device) for image in images])
+            with amp_autocast():
+                predictions = model([image.to(device) for image in images])
 
             for prediction, target in zip(predictions, targets):
                 pred_boxes = prediction["boxes"].detach().cpu()
@@ -279,8 +289,9 @@ def evaluate_loss(model, data_loader):
                     for target in targets
                 ]
 
-                loss_dict = model(images, targets)
-                loss = sum(loss_dict.values())
+                with amp_autocast():
+                    loss_dict = model(images, targets)
+                    loss = sum(loss_dict.values())
                 running_loss += loss.item()
                 num_batches += 1
     finally:
@@ -321,6 +332,8 @@ def train_for_seed(seed, model_output_dir, csv_output_dir):
         momentum=0.9,
         weight_decay=5e-4,
     )
+    use_amp = device.type == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     model_path = os.path.join(
         model_output_dir, f"ssd_calculator_seed{seed}_state_dict.pth"
@@ -334,7 +347,8 @@ def train_for_seed(seed, model_output_dir, csv_output_dir):
     print(
         f"\n===== seed {seed} の学習を開始 =====\n"
         f"device: {device} / train images: {len(train_dataset)} "
-        f"/ val images: {len(val_dataset)}"
+        f"/ val images: {len(val_dataset)} "
+        f"/ AMP: {'enabled' if use_amp else 'disabled'}"
     )
 
     with open(csv_path, "w", newline="", encoding="utf-8") as csv_file:
@@ -359,12 +373,15 @@ def train_for_seed(seed, model_output_dir, csv_output_dir):
                 for target in targets
             ]
 
-            loss_dict = model(images, targets)
-            loss = sum(loss_dict.values())
+            optimizer.zero_grad(set_to_none=True)
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            with amp_autocast():
+                loss_dict = model(images, targets)
+                loss = sum(loss_dict.values())
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             running_loss += loss.item()
             progress.set_postfix(loss=f"{loss.item():.4f}")
