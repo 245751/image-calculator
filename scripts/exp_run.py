@@ -18,7 +18,7 @@ from tqdm.auto import tqdm
 
 NUM_CLASSES = 15  # 背景(0) + 数字(10) + 記号(4: +, -, x, =)
 RANDOM_SEEDS = (42, 43, 44)
-NUM_EPOCHS = 10
+NUM_EPOCHS = 20
 BATCH_SIZE = 32
 LEARNING_RATE = 1e-3
 MAP_IOU_THRESHOLDS = tuple(i / 100 for i in range(50, 100, 5))
@@ -39,12 +39,19 @@ def set_random_seed(seed):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="3つのseedでSSDを学習します。"
+        description="指定したseedでSSDを学習します。"
     )
     parser.add_argument(
         "--output-dir-name",
         required=True,
         help="outputs/logsの下に作成する学習結果ディレクトリ名",
+    )
+    parser.add_argument(
+        "--seed",
+        required=True,
+        type=int,
+        choices=RANDOM_SEEDS,
+        help="学習に使用するseed",
     )
     args = parser.parse_args()
 
@@ -400,42 +407,75 @@ def train_for_seed(seed, model_output_dir, csv_output_dir):
     }
 
 
+def write_csv_atomically(path, rows):
+    """並列ジョブから途中まで書かれたCSVが見えないように保存する。"""
+    temporary_path = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(temporary_path, "w", newline="", encoding="utf-8") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerows(rows)
+        os.replace(temporary_path, path)
+    finally:
+        if os.path.exists(temporary_path):
+            os.remove(temporary_path)
+
+
+def write_training_summaries(result, csv_output_dir):
+    """seed別サマリーを書き、全seed完了時には統合版も生成する。"""
+    header = ["seed", "best_epoch", "best_map", "model_path", "csv_path"]
+    result_row = [
+        result["seed"],
+        result["best_epoch"],
+        result["best_map"],
+        result["model_path"],
+        result["csv_path"],
+    ]
+    seed_summary_path = os.path.join(
+        csv_output_dir, f"training_seed_summary_seed{result['seed']}.csv"
+    )
+    write_csv_atomically(seed_summary_path, [header, result_row])
+
+    seed_summary_paths = [
+        os.path.join(csv_output_dir, f"training_seed_summary_seed{seed}.csv")
+        for seed in RANDOM_SEEDS
+    ]
+    if not all(os.path.exists(path) for path in seed_summary_paths):
+        return seed_summary_path, None
+
+    combined_rows = [header]
+    for path in seed_summary_paths:
+        with open(path, newline="", encoding="utf-8") as csv_file:
+            rows = list(csv.reader(csv_file))
+        if len(rows) != 2 or rows[0] != header:
+            raise ValueError(f"不正なseed別サマリーです: {path}")
+        combined_rows.append(rows[1])
+
+    combined_summary_path = os.path.join(
+        csv_output_dir, "training_seed_summary.csv"
+    )
+    write_csv_atomically(combined_summary_path, combined_rows)
+    return seed_summary_path, combined_summary_path
+
+
 if __name__ == "__main__":
     args = parse_args()
     run_output_dir = os.path.join(OUTPUT_BASE_DIR, args.output_dir_name)
     model_output_dir = os.path.join(run_output_dir, "model")
     csv_output_dir = os.path.join(run_output_dir, "csv")
-    summary_csv_path = os.path.join(csv_output_dir, "training_seed_summary.csv")
     os.makedirs(model_output_dir, exist_ok=True)
     os.makedirs(csv_output_dir, exist_ok=True)
 
     print(f"学習結果の保存先: {run_output_dir}")
-    with open(summary_csv_path, "w", newline="", encoding="utf-8") as csv_file:
-        writer = csv.writer(csv_file)
-        writer.writerow(["seed", "best_epoch", "best_map", "model_path", "csv_path"])
-
-    seed_results = []
-    for seed in RANDOM_SEEDS:
-        result = train_for_seed(seed, model_output_dir, csv_output_dir)
-        seed_results.append(result)
-        with open(summary_csv_path, "a", newline="", encoding="utf-8") as csv_file:
-            writer = csv.writer(csv_file)
-            writer.writerow(
-                [
-                    result["seed"],
-                    result["best_epoch"],
-                    result["best_map"],
-                    result["model_path"],
-                    result["csv_path"],
-                ]
-            )
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    best_maps = [result["best_map"] for result in seed_results]
-    print(
-        f"\n3 seedsの学習完了: mean={np.mean(best_maps):.4f}, "
-        f"std={np.std(best_maps):.4f}"
+    result = train_for_seed(args.seed, model_output_dir, csv_output_dir)
+    seed_summary_path, combined_summary_path = write_training_summaries(
+        result, csv_output_dir
     )
-    print(f"seed別サマリー: {summary_csv_path}")
+
+    print(
+        f"\n学習完了: seed={result['seed']}, "
+        f"best_epoch={result['best_epoch']}, "
+        f"best_map={result['best_map']:.4f}"
+    )
+    print(f"seed別学習サマリー: {seed_summary_path}")
+    if combined_summary_path is not None:
+        print(f"全seed学習サマリー: {combined_summary_path}")
