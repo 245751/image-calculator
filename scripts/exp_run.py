@@ -25,6 +25,8 @@ BATCH_SIZE = 256
 LEARNING_RATE = 4e-3
 WARMUP_EPOCHS = 1
 MIN_LEARNING_RATE = 1e-5
+EARLY_STOPPING_PATIENCE = 15
+EARLY_STOPPING_MIN_DELTA = 1e-4
 MAP_IOU_THRESHOLDS = tuple(i / 100 for i in range(50, 100, 5))
 OUTPUT_BASE_DIR = os.path.join("outputs", "logs")
 
@@ -379,6 +381,8 @@ def train_for_seed(seed, model_output_dir, csv_output_dir):
 
     best_map = float("-inf")
     best_epoch = 0
+    early_stopping_best_map = float("-inf")
+    epochs_without_map_improvement = 0
 
     for epoch in range(NUM_EPOCHS):
         model.train()
@@ -441,6 +445,23 @@ def train_for_seed(seed, model_output_dir, csv_output_dir):
                 f"seed={seed}, epoch={best_epoch}, "
                 f"mAP={best_map:.4f}, path={model_path}"
             )
+
+        if (
+            mean_average_precision
+            > early_stopping_best_map + EARLY_STOPPING_MIN_DELTA
+        ):
+            early_stopping_best_map = mean_average_precision
+            epochs_without_map_improvement = 0
+        else:
+            epochs_without_map_improvement += 1
+
+        if epochs_without_map_improvement >= EARLY_STOPPING_PATIENCE:
+            print(
+                f"Early stopping: mAPが{EARLY_STOPPING_PATIENCE} epoch連続で"
+                f"{EARLY_STOPPING_MIN_DELTA:g}以上改善しなかったため、"
+                f"epoch {epoch + 1}で学習を終了します。"
+            )
+            break
 
         scheduler.step()
 
