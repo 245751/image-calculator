@@ -34,8 +34,9 @@ LABEL_MAP = {
     "9": 10,
     "+": 11,
     "-": 12,
-    "x": 13,
-    "=": 14,
+    "×": 13,
+    "÷": 14,
+    "=": 15,
 }
 LABEL_NAMES = {label: name for name, label in LABEL_MAP.items()}
 NUM_CLASSES = len(LABEL_MAP) + 1
