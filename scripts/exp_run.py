@@ -124,7 +124,7 @@ class CustomVOCDataset(torch.utils.data.Dataset):
         if self.transforms:
             img = self.transforms(img)
 
-        return img, target
+        return img, target ,image_id
 
 transform = transforms.ToTensor()
 train_dataset = CustomVOCDataset(
@@ -230,7 +230,7 @@ def evaluate_map(model, data_loader):
     image_index = 0
 
     with torch.inference_mode():
-        for images, targets in tqdm(data_loader, desc="Validation mAP", leave=False):
+        for images, targets, _ in tqdm(data_loader, desc="Validation mAP", leave=False):
             with amp_autocast():
                 predictions = model([image.to(device) for image in images])
 
@@ -285,7 +285,7 @@ def evaluate_loss(model, data_loader):
 
     try:
         with torch.no_grad():
-            for images, targets in tqdm(
+            for images, targets, _ in tqdm(
                 data_loader, desc="Validation loss", leave=False
             ):
                 images = [image.to(device) for image in images]
@@ -393,7 +393,7 @@ def train_for_seed(seed, model_output_dir, csv_output_dir):
             train_loader,
             desc=f"Seed {seed} | Epoch {epoch + 1}/{NUM_EPOCHS}",
         )
-        for images, targets in progress:
+        for batch_index, (images, targets, image_ids) in enumerate(progress):
             images = [image.to(device) for image in images]
             targets = [
                 {key: value.to(device) for key, value in target.items()}
@@ -405,6 +405,13 @@ def train_for_seed(seed, model_output_dir, csv_output_dir):
             with amp_autocast():
                 loss_dict = model(images, targets)
                 loss = sum(loss_dict.values())
+                loss = torch.tensor(float("inf"))
+                if not(torch.isfinite(loss)):
+                    print(
+                        f"NaN detected:epoch={epoch+1}"
+                        f"batch={batch_index} image_index={image_ids}"
+                          )
+                    raise RuntimeError("Non-finite training loss detected")           
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
