@@ -405,7 +405,6 @@ def train_for_seed(seed, model_output_dir, csv_output_dir):
             with amp_autocast():
                 loss_dict = model(images, targets)
                 loss = sum(loss_dict.values())
-                loss = torch.tensor(float("inf"))
                 if not(torch.isfinite(loss)):
                     print(
                         f"NaN detected:epoch={epoch+1}"
