@@ -20,9 +20,10 @@ from tqdm.auto import tqdm
 
 NUM_CLASSES = 16  # 背景(0) + 数字(10) + 記号(5: +, -, ×, ÷, =)
 RANDOM_SEEDS = (42, 43, 44)
-NUM_EPOCHS = 100
-BATCH_SIZE = 256
-LEARNING_RATE = 4e-3
+NUM_EPOCHS = 40
+BATCH_SIZE = 64
+NUM_WORKERS=2
+LEARNING_RATE = 1e-3
 WARMUP_EPOCHS = 4
 MIN_LEARNING_RATE = 1e-5
 EARLY_STOPPING_PATIENCE = 15
@@ -142,7 +143,7 @@ val_loader = DataLoader(
     val_dataset,
     batch_size=BATCH_SIZE,
     shuffle=False,
-    num_workers=0,
+    num_workers=NUM_WORKERS,
     collate_fn=lambda batch: tuple(zip(*batch)),
 )
 
@@ -310,7 +311,7 @@ def create_train_loader(seed):
         batch_size=BATCH_SIZE,
         shuffle=True,
         generator=torch.Generator().manual_seed(seed),
-        num_workers=0,
+        num_workers=NUM_WORKERS,
         collate_fn=lambda batch: tuple(zip(*batch)),
     )
 
