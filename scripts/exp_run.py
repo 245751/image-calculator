@@ -20,7 +20,7 @@ from tqdm.auto import tqdm
 
 NUM_CLASSES = 16  # 背景(0) + 数字(10) + 記号(5: +, -, ×, ÷, =)
 RANDOM_SEEDS = (42, 43, 44)
-NUM_EPOCHS = 40
+NUM_EPOCHS = 100
 BATCH_SIZE = 64
 NUM_WORKERS= 2
 LEARNING_RATE = 1e-3
@@ -127,7 +127,13 @@ class CustomVOCDataset(torch.utils.data.Dataset):
 
         return img, target ,image_id
 
-transform = transforms.ToTensor()
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+    ),
+])
+
 train_dataset = CustomVOCDataset(
     root="data/processed/train",
     image_set="train",
