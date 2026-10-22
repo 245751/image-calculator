@@ -31,11 +31,15 @@ TRAIN_FONT_PATHS = [
 VAL_FONT_PATHS = [
     FONTS_DIR / "Caveat-Bold.ttf",
     FONTS_DIR / "GloriaHallelujah-Regular.ttf",
+]
+
+# test用フォントを追加するとtestデータセットも生成する
+TEST_FONT_PATHS = [
     FONTS_DIR / "KleeOne-Regular.ttf",
     FONTS_DIR / "ZenKurenaido-Regular.ttf",
 ]
 
-ALL_FONT_PATHS = TRAIN_FONT_PATHS + VAL_FONT_PATHS
+ALL_FONT_PATHS = TRAIN_FONT_PATHS + VAL_FONT_PATHS + TEST_FONT_PATHS
 
 OPERATORS = ("+", "-", "×", "÷")
 ANNOTATION_CHARACTERS = set(OPERATORS) | {"=", "(", ")"}
@@ -565,69 +569,80 @@ def create_train_val_datasets(
     train_font_paths=None,
     val_font_paths=None,
     random_seed=42,
+    test_samples=0,
+    test_font_paths=None,
     **dataset_options,
 ):
-    """重複しない数式を使ってtrainとvalを連続生成する。"""
+    """数式とフォントが重複しないtrain・val・testを生成する。
+
+    test_samplesが0、またはtest_font_pathsが空の場合はtestを生成しない。
+    各分割の画像ID一覧は、既存の読み込み処理に合わせてtrain.txtに保存する。
+    """
     if train_samples < 1 or val_samples < 1:
         raise ValueError("train_samplesとval_samplesは1以上にしてください")
+    if test_samples < 0:
+        raise ValueError("test_samplesは0以上にしてください")
 
-    if train_font_paths is None:
-        train_font_paths = TRAIN_FONT_PATHS
-    if val_font_paths is None:
-        val_font_paths = VAL_FONT_PATHS
-
-    train_font_paths = list(train_font_paths)
-    val_font_paths = list(val_font_paths)
+    train_font_paths = list(TRAIN_FONT_PATHS if train_font_paths is None else train_font_paths)
+    val_font_paths = list(VAL_FONT_PATHS if val_font_paths is None else val_font_paths)
+    test_font_paths = list(TEST_FONT_PATHS if test_font_paths is None else test_font_paths)
     if not train_font_paths or not val_font_paths:
         raise ValueError("trainとvalには、それぞれ1個以上のフォントが必要です")
 
-    train_fonts = {Path(path).resolve() for path in train_font_paths}
-    val_fonts = {Path(path).resolve() for path in val_font_paths}
-    duplicate_fonts = train_fonts & val_fonts
-    if duplicate_fonts:
-        duplicate_names = ", ".join(sorted(path.name for path in duplicate_fonts))
-        raise ValueError(f"trainとvalでフォントが重複しています: {duplicate_names}")
+    splits = [
+        ("train", train_samples, train_font_paths),
+        ("val", val_samples, val_font_paths),
+    ]
+    if test_samples > 0:
+        if test_font_paths:
+            splits.append(("test", test_samples, test_font_paths))
+        else:
+            print("ℹ️ test用フォントが未設定のため、testの生成をスキップします")
+
+    for index, (name, _, paths) in enumerate(splits):
+        fonts = {Path(path).resolve() for path in paths}
+        for other_name, _, other_paths in splits[:index]:
+            duplicate_fonts = fonts & {Path(path).resolve() for path in other_paths}
+            if duplicate_fonts:
+                duplicate_names = ", ".join(sorted(path.name for path in duplicate_fonts))
+                raise ValueError(f"{other_name}と{name}でフォントが重複しています: {duplicate_names}")
 
     formula_pool = build_formula_pool(
         min_digits=min_digits,
         max_digits=max_digits,
         seed=random_seed,
     )
-    total_samples = train_samples + val_samples
+    total_samples = sum(samples for _, samples, _ in splits)
+    split_names = "・".join(name for name, _, _ in splits)
     if total_samples > len(formula_pool):
         raise ValueError(
-            f"trainとvalの合計={total_samples}は、重複なしで生成できる"
+            f"{split_names}の合計={total_samples}は、重複なしで生成できる"
             f"数式候補数={len(formula_pool)}を超えています"
         )
 
-    train_formulas = formula_pool[:train_samples]
-    val_formulas = formula_pool[train_samples:total_samples]
-
     print(
         f"📊 数式候補{len(formula_pool)}個を "
-        f"train={train_samples}個、val={val_samples}個に分割します"
+        + "、".join(f"{name}={samples}個" for name, samples, _ in splits)
+        + "に分割します"
     )
     print(
-        f"🔤 フォントをtrain={len(train_font_paths)}個、"
-        f"val={len(val_font_paths)}個に分割します"
+        "🔤 フォントを"
+        + "、".join(f"{name}={len(paths)}個" for name, _, paths in splits)
+        + "に分割します"
     )
 
-    create_voc_dataset(
-        output_dir=Path(output_root) / "train",
-        formula_list=train_formulas,
-        font_paths=train_font_paths,
-        random_seed=random_seed,
-        **dataset_options,
-    )
-    create_voc_dataset(
-        output_dir=Path(output_root) / "val",
-        formula_list=val_formulas,
-        font_paths=val_font_paths,
-        random_seed=random_seed + 1,
-        **dataset_options,
-    )
+    offset = 0
+    for index, (name, samples, paths) in enumerate(splits):
+        create_voc_dataset(
+            output_dir=Path(output_root) / name,
+            formula_list=formula_pool[offset:offset + samples],
+            font_paths=paths,
+            random_seed=random_seed + index,
+            **dataset_options,
+        )
+        offset += samples
 
-    print("✅ trainとvalで重複しないデータセットを生成しました")
+    print(f"✅ {split_names}で重複しないデータセットを生成しました")
 
 
 # 使用例:
@@ -672,10 +687,12 @@ def create_train_val_datasets(
 if __name__ == "__main__":
     create_train_val_datasets(
         output_root=PROJECT_ROOT / "data" / "generated" / "processed",
-        train_samples=16000,
+        train_samples=32000,
         val_samples=4000,
+        test_samples=4000,
         train_font_paths=TRAIN_FONT_PATHS,
         val_font_paths=VAL_FONT_PATHS,
+        test_font_paths=TEST_FONT_PATHS,
         random_font_size=True,
         font_size_range=(50, 130),
         random_layout=True,
