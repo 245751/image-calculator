@@ -1,5 +1,7 @@
 import os
+import json
 import random
+import tempfile
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 import xml.etree.ElementTree as ET
@@ -43,6 +45,50 @@ ALL_FONT_PATHS = TRAIN_FONT_PATHS + VAL_FONT_PATHS + TEST_FONT_PATHS
 
 OPERATORS = ("+", "-", "×", "÷")
 ANNOTATION_CHARACTERS = set(OPERATORS) | {"=", "(", ")"}
+
+
+def save_dataset_config(output_dir, config):
+    """設定用の辞書・リスト・スカラーをUTF-8 YAMLとして保存する。"""
+    def yaml_lines(mapping, indent=0):
+        prefix = " " * indent
+        for key, value in mapping.items():
+            if isinstance(value, dict):
+                yield f"{prefix}{key}:"
+                yield from yaml_lines(value, indent + 2)
+            elif isinstance(value, list) and value:
+                yield f"{prefix}{key}:"
+                for item in value:
+                    yield f"{prefix}  - {json.dumps(item, ensure_ascii=False, allow_nan=False)}"
+            else:
+                # JSONの文字列・数値・真偽値・null・空リストはYAMLでも有効。
+                yield f"{prefix}{key}: {json.dumps(value, ensure_ascii=False, allow_nan=False)}"
+
+    content = "# データセット生成時の設定（文字サイズの安全補正前）\n"
+    content += "\n".join(yaml_lines(config)) + "\n"
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    config_path = output_dir / "dataset_config.yaml"
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=output_dir, delete=False
+        ) as handle:
+            temporary_path = Path(handle.name)
+            handle.write(content)
+        temporary_path.replace(config_path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+    print(f"📝 生成設定を保存しました: {config_path}")
+
+
+def config_font_path(path):
+    """プロジェクト内のフォントは移動可能な相対パスで記録する。"""
+    resolved = Path(path).resolve()
+    try:
+        return resolved.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        return str(resolved)
 
 
 # 重複のない数式候補を作り、固定シードで順番をランダム化する
@@ -369,7 +415,10 @@ def create_voc_dataset(
     random_seed=42,
     box_padding=15,
     glyph_threshold=240,
+    *,
+    save_config=True,
 ):
+    """画像を生成し、設定を返す。単独生成では出力先にYAMLも保存する。"""
     # 数式、フォント割り当て、文字サイズ、レイアウトを再現可能にする
     random.seed(random_seed)
 
@@ -559,6 +608,36 @@ def create_voc_dataset(
     
     print(f"🛡️ 枠はみ出し防止機能: 有効")
 
+    split_config = {
+        "num_samples": actual_samples,
+        "font_paths": [config_font_path(path) for path in font_paths],
+    }
+    if font_counts is not None:
+        split_config["font_counts"] = list(font_counts)
+    config = {
+        "generation": {"random_seed": random_seed},
+        "formula": {"min_digits": 1, "max_digits": 2},
+        "image": {"width": image_size[0], "height": image_size[1]},
+        "text": {
+            "random_font_size": random_font_size,
+            "font_size": font_size,
+            "font_size_range": {"min": font_size_range[0], "max": font_size_range[1]},
+        },
+        "layout": {"random_layout": random_layout},
+        "annotation": {"box_padding": box_padding, "glyph_threshold": glyph_threshold},
+        "splits": {"train": split_config},
+    }
+    if formula_list is not None:
+        # 任意の数式リストでは桁数制限を適用していない。
+        config["formula"] = {
+            "min_digits": None, "max_digits": None,
+        }
+        if save_config:
+            config["formula"]["formulas"] = list(formulas)
+    if save_config:
+        save_dataset_config(output_dir, config)
+    return config
+
 
 def create_train_val_datasets(
     output_root,
@@ -577,6 +656,7 @@ def create_train_val_datasets(
 
     test_samplesが0、またはtest_font_pathsが空の場合はtestを生成しない。
     各分割の画像ID一覧は、既存の読み込み処理に合わせてtrain.txtに保存する。
+    全分割の生成完了後、output_rootにdataset_config.yamlを保存する。
     """
     if train_samples < 1 or val_samples < 1:
         raise ValueError("train_samplesとval_samplesは1以上にしてください")
@@ -632,16 +712,24 @@ def create_train_val_datasets(
     )
 
     offset = 0
+    split_configs = {}
     for index, (name, samples, paths) in enumerate(splits):
-        create_voc_dataset(
+        config = create_voc_dataset(
             output_dir=Path(output_root) / name,
             formula_list=formula_pool[offset:offset + samples],
             font_paths=paths,
             random_seed=random_seed + index,
+            save_config=False,
             **dataset_options,
         )
+        config_name = "validation" if name == "val" else name
+        split_configs[config_name] = config["splits"]["train"]
         offset += samples
 
+    config["generation"]["random_seed"] = random_seed
+    config["formula"] = {"min_digits": min_digits, "max_digits": max_digits}
+    config["splits"] = split_configs
+    save_dataset_config(output_root, config)
     print(f"✅ {split_names}で重複しないデータセットを生成しました")
 
 
@@ -686,7 +774,7 @@ def create_train_val_datasets(
 
 if __name__ == "__main__":
     create_train_val_datasets(
-        output_root=PROJECT_ROOT / "data" / "generated" / "processed",
+        output_root=PROJECT_ROOT / "data" / "generated" / "meke_test",
         train_samples=32000,
         val_samples=4000,
         test_samples=4000,
