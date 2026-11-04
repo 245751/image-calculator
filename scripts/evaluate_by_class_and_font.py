@@ -10,7 +10,7 @@ from torchvision import transforms
 from torchvision.models.detection import ssd300_vgg16
 from torchvision.models.detection._utils import retrieve_out_channels
 from torchvision.models.detection.ssd import SSDClassificationHead
-from torchvision.ops import box_iou
+from image_calculator.coco_evaluation import evaluate_coco
 from tqdm.auto import tqdm
 
 
@@ -159,112 +159,11 @@ def run_inference(model, data_loader, device):
     return records
 
 
-def prepare_class_data(records):
-    predictions_by_class = {label: [] for label in LABEL_NAMES}
-    ground_truths_by_class = {label: {} for label in LABEL_NAMES}
-
-    for record in records:
-        image_index = record["image_index"]
-        for label in LABEL_NAMES:
-            gt_boxes = record["gt_boxes"][record["gt_labels"] == label]
-            pred_mask = record["pred_labels"] == label
-            pred_boxes = record["pred_boxes"][pred_mask]
-            pred_scores = record["pred_scores"][pred_mask]
-            ground_truths_by_class[label][image_index] = gt_boxes
-
-            if len(gt_boxes) > 0 and len(pred_boxes) > 0:
-                iou_matrix = box_iou(pred_boxes, gt_boxes)
-            else:
-                iou_matrix = torch.empty((len(pred_boxes), len(gt_boxes)))
-
-            for score, ious in zip(pred_scores.tolist(), iou_matrix):
-                predictions_by_class[label].append((score, image_index, ious))
-
-    for predictions in predictions_by_class.values():
-        predictions.sort(key=lambda item: item[0], reverse=True)
-
-    return predictions_by_class, ground_truths_by_class
-
-
-def calculate_average_precision(predictions, ground_truths, iou_threshold):
-    num_ground_truths = sum(len(boxes) for boxes in ground_truths.values())
-    if num_ground_truths == 0:
-        return None
-
-    matched = {
-        image_index: torch.zeros(len(boxes), dtype=torch.bool)
-        for image_index, boxes in ground_truths.items()
-    }
-    true_positives = []
-    false_positives = []
-
-    for _, image_index, ious in predictions:
-        unmatched_indices = torch.where(~matched[image_index])[0]
-        if len(unmatched_indices) == 0:
-            true_positives.append(0.0)
-            false_positives.append(1.0)
-            continue
-
-        unmatched_ious = ious[unmatched_indices]
-        best_iou, best_position = unmatched_ious.max(dim=0)
-        if best_iou.item() >= iou_threshold:
-            matched_index = unmatched_indices[best_position]
-            matched[image_index][matched_index] = True
-            true_positives.append(1.0)
-            false_positives.append(0.0)
-        else:
-            true_positives.append(0.0)
-            false_positives.append(1.0)
-
-    if not predictions:
-        return 0.0
-
-    true_positives = torch.tensor(true_positives).cumsum(dim=0)
-    false_positives = torch.tensor(false_positives).cumsum(dim=0)
-    recalls = true_positives / num_ground_truths
-    precisions = true_positives / (true_positives + false_positives)
-
-    interpolated_precisions = []
-    for recall_level in torch.linspace(0, 1, 101):
-        candidates = precisions[recalls >= recall_level]
-        interpolated_precisions.append(
-            candidates.max().item() if len(candidates) > 0 else 0.0
-        )
-    return sum(interpolated_precisions) / len(interpolated_precisions)
-
-
-def calculate_class_aps(
-    predictions_by_class,
-    ground_truths_by_class,
-    image_indices=None,
-):
-    if image_indices is not None:
-        image_indices = set(image_indices)
-
-    results = {}
-    for label in LABEL_NAMES:
-        predictions = predictions_by_class[label]
-        ground_truths = ground_truths_by_class[label]
-        if image_indices is not None:
-            predictions = [
-                prediction
-                for prediction in predictions
-                if prediction[1] in image_indices
-            ]
-            ground_truths = {
-                image_index: boxes
-                for image_index, boxes in ground_truths.items()
-                if image_index in image_indices
-            }
-
-        results[label] = {
-            threshold: calculate_average_precision(
-                predictions, ground_truths, threshold
-            )
-            for threshold in IOU_THRESHOLDS
-        }
-
-    return results
+def calculate_class_aps(records, image_indices=None):
+    result = evaluate_coco(
+        records, LABEL_NAMES, IOU_THRESHOLDS, image_indices=image_indices,
+    )
+    return result["class_aps"]
 
 
 def mean_present_class_ap(class_aps, threshold):
@@ -298,7 +197,7 @@ def write_character_csv(class_aps, output_path):
             )
 
 
-def write_font_csv(records, predictions_by_class, ground_truths_by_class, output_path):
+def write_font_csv(records, output_path):
     threshold_columns = [f"map_{threshold:.2f}" for threshold in IOU_THRESHOLDS]
     fonts = sorted({record["font"] for record in records})
 
@@ -312,11 +211,7 @@ def write_font_csv(records, predictions_by_class, ground_truths_by_class, output
                 for record in records
                 if record["font"] == font_name
             }
-            class_aps = calculate_class_aps(
-                predictions_by_class,
-                ground_truths_by_class,
-                font_image_indices,
-            )
+            class_aps = calculate_class_aps(records, font_image_indices)
             map_values = [
                 mean_present_class_ap(class_aps, threshold)
                 for threshold in IOU_THRESHOLDS
@@ -375,21 +270,13 @@ def main():
         f"validation images={len(dataset)}"
     )
     records = run_inference(model, data_loader, device)
-    predictions_by_class, ground_truths_by_class = prepare_class_data(records)
-    class_aps = calculate_class_aps(
-        predictions_by_class, ground_truths_by_class
-    )
+    class_aps = calculate_class_aps(records)
 
     suffix = f"_{args.output_suffix}" if args.output_suffix else ""
     character_csv = args.output_dir / f"ap_by_character{suffix}.csv"
     font_csv = args.output_dir / f"map_by_font{suffix}.csv"
     write_character_csv(class_aps, character_csv)
-    write_font_csv(
-        records,
-        predictions_by_class,
-        ground_truths_by_class,
-        font_csv,
-    )
+    write_font_csv(records, font_csv)
 
     print(f"文字クラス別AP: {character_csv}")
     print(f"フォント別mAP: {font_csv}")

@@ -15,7 +15,7 @@ from torchvision import transforms
 from torchvision.models.detection import ssd300_vgg16, SSD300_VGG16_Weights
 from torchvision.models.detection._utils import retrieve_out_channels
 from torchvision.models.detection.ssd import SSDClassificationHead
-from torchvision.ops import box_iou
+from image_calculator.coco_evaluation import evaluate_coco
 from tqdm.auto import tqdm
 
 NUM_CLASSES = 16  # 背景(0) + 数字(10) + 記号(5: +, -, ×, ÷, =)
@@ -163,72 +163,10 @@ def amp_autocast():
     return nullcontext()
 
 
-def calculate_average_precision(predictions, ground_truths, iou_threshold):
-    """1クラス分のAPを101点補間で計算する。"""
-    num_ground_truths = sum(len(boxes) for boxes in ground_truths.values())
-    if num_ground_truths == 0:
-        return None
-
-    matched = {
-        image_index: torch.zeros(len(boxes), dtype=torch.bool)
-        for image_index, boxes in ground_truths.items()
-    }
-    true_positives = []
-    false_positives = []
-
-    for score, image_index, pred_box in sorted(
-        predictions, key=lambda item: item[0], reverse=True
-    ):
-        gt_boxes = ground_truths.get(image_index)
-        if gt_boxes is None or len(gt_boxes) == 0:
-            true_positives.append(0.0)
-            false_positives.append(1.0)
-            continue
-
-        unmatched_indices = torch.where(~matched[image_index])[0]
-        if len(unmatched_indices) == 0:
-            true_positives.append(0.0)
-            false_positives.append(1.0)
-            continue
-
-        ious = box_iou(
-            pred_box.unsqueeze(0), gt_boxes[unmatched_indices]
-        ).squeeze(0)
-        best_iou, best_position = ious.max(dim=0)
-
-        if best_iou.item() >= iou_threshold:
-            matched_index = unmatched_indices[best_position]
-            matched[image_index][matched_index] = True
-            true_positives.append(1.0)
-            false_positives.append(0.0)
-        else:
-            true_positives.append(0.0)
-            false_positives.append(1.0)
-
-    if not predictions:
-        return 0.0
-
-    true_positives = torch.tensor(true_positives).cumsum(dim=0)
-    false_positives = torch.tensor(false_positives).cumsum(dim=0)
-    recalls = true_positives / num_ground_truths
-    precisions = true_positives / (true_positives + false_positives)
-
-    # COCO形式と同じく、recall 0.00〜1.00の101点で補間する。
-    interpolated_precisions = []
-    for recall_level in torch.linspace(0, 1, 101):
-        candidates = precisions[recalls >= recall_level]
-        interpolated_precisions.append(
-            candidates.max().item() if len(candidates) > 0 else 0.0
-        )
-
-    return sum(interpolated_precisions) / len(interpolated_precisions)
-
-
 def evaluate_map(model, data_loader):
-    """IoU 0.50:0.95におけるクラス平均mAPを計算する。"""
+    """COCOevalでIoU 0.50:0.95のクラス平均mAPを計算する。"""
     model.eval()
-    predictions_by_class = {label: [] for label in range(1, NUM_CLASSES)}
-    ground_truths_by_class = {label: {} for label in range(1, NUM_CLASSES)}
+    records = []
     image_index = 0
 
     with torch.inference_mode():
@@ -237,38 +175,18 @@ def evaluate_map(model, data_loader):
                 predictions = model([image.to(device) for image in images])
 
             for prediction, target in zip(predictions, targets):
-                pred_boxes = prediction["boxes"].detach().cpu()
-                pred_labels = prediction["labels"].detach().cpu()
-                pred_scores = prediction["scores"].detach().cpu()
-                gt_boxes = target["boxes"].cpu()
-                gt_labels = target["labels"].cpu()
-
-                for label in range(1, NUM_CLASSES):
-                    ground_truths_by_class[label][image_index] = gt_boxes[
-                        gt_labels == label
-                    ]
-
-                for box, label, score in zip(
-                    pred_boxes, pred_labels.tolist(), pred_scores.tolist()
-                ):
-                    predictions_by_class[label].append(
-                        (score, image_index, box)
-                    )
-
+                records.append({
+                    "image_index": image_index,
+                    "pred_boxes": prediction["boxes"].detach().cpu(),
+                    "pred_labels": prediction["labels"].detach().cpu(),
+                    "pred_scores": prediction["scores"].detach().cpu(),
+                    "gt_boxes": target["boxes"].cpu(),
+                    "gt_labels": target["labels"].cpu(),
+                })
                 image_index += 1
 
-    average_precisions = []
-    for iou_threshold in MAP_IOU_THRESHOLDS:
-        for label in range(1, NUM_CLASSES):
-            average_precision = calculate_average_precision(
-                predictions_by_class[label],
-                ground_truths_by_class[label],
-                iou_threshold,
-            )
-            if average_precision is not None:
-                average_precisions.append(average_precision)
-
-    return sum(average_precisions) / max(len(average_precisions), 1)
+    result = evaluate_coco(records, range(1, NUM_CLASSES), MAP_IOU_THRESHOLDS)
+    return result["map"] if result["map"] is not None else 0.0
 
 
 def evaluate_loss(model, data_loader):
