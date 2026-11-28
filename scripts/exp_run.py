@@ -11,7 +11,8 @@ from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
 import csv
 from torch.utils.data import DataLoader
-from torchvision import transforms
+from torchvision import transforms, tv_tensors
+from torchvision.transforms import InterpolationMode, v2
 from torchvision.models.detection import ssd300_vgg16, SSD300_VGG16_Weights
 from torchvision.models.detection._utils import retrieve_out_channels
 from torchvision.models.detection.ssd import SSDClassificationHead
@@ -30,6 +31,8 @@ EARLY_STOPPING_PATIENCE = 5
 EARLY_STOPPING_MIN_DELTA = 1e-4
 MAP_IOU_THRESHOLDS = tuple(i / 100 for i in range(50, 100, 5))
 OUTPUT_BASE_DIR = os.path.join("outputs", "logs")
+TRAIN_SHEAR_DEGREES = 30.0
+TRAIN_SHEAR_PROBABILITY = 0.5
 
 
 def set_random_seed(seed):
@@ -73,12 +76,48 @@ def parse_args():
     return args
 
 
+class RandomHorizontalShear:
+    """画像と正解枠を一緒に左右へ傾ける。degrees=0またはp=0で無効化。"""
+
+    def __init__(self, degrees=TRAIN_SHEAR_DEGREES, p=TRAIN_SHEAR_PROBABILITY):
+        if not 0 <= degrees < 90:
+            raise ValueError("degreesは0以上90未満にしてください")
+        if not 0 <= p <= 1:
+            raise ValueError("pは0以上1以下にしてください")
+        self.degrees = degrees
+        self.p = p
+        self.affine = v2.RandomAffine(
+            degrees=0,
+            shear=(-degrees, degrees),
+            interpolation=InterpolationMode.BILINEAR,
+            fill=255,
+        )
+
+    def __call__(self, image, target):
+        if self.degrees == 0 or self.p == 0 or torch.rand(()).item() >= self.p:
+            return image, target
+
+        width, height = image.size
+        boxes = tv_tensors.BoundingBoxes(
+            target["boxes"], format="XYXY", canvas_size=(height, width)
+        )
+        # 中心を基準にせん断すると、上下端は最大で高さ/2*tan(角度)だけ横移動する。
+        # 先に左右へ余白を足し、画像と正解枠の切り落としを防ぐ。
+        padding = math.ceil(height / 2 * math.tan(math.radians(self.degrees))) + 1
+        image, boxes = v2.Pad([padding, 0], fill=255)(image, boxes)
+        image, boxes = self.affine(image, boxes)
+        target = {**target, "boxes": boxes.as_subclass(torch.Tensor)}
+        return image, target
+
+
 class CustomVOCDataset(torch.utils.data.Dataset):
-    def __init__(self, root, image_set='train', transforms=None, label_map=None):
+    def __init__(self, root, image_set='train', transforms=None, label_map=None,
+                 augmentation=None):
         self.root = root
         self.image_dir = os.path.join(root, "JPEGImages")
         self.annotation_dir = os.path.join(root, "Annotations")
         self.transforms = transforms
+        self.augmentation = augmentation
         self.label_map = label_map or {
             '0': 1, '1': 2, '2': 3, '3': 4, '4': 5, '5': 6,
             '6': 7, '7': 8, '8': 9, '9': 10,
@@ -122,6 +161,9 @@ class CustomVOCDataset(torch.utils.data.Dataset):
             "labels": torch.tensor(labels, dtype=torch.int64)
         }
 
+        if self.augmentation:
+            img, target = self.augmentation(img, target)
+
         if self.transforms:
             img = self.transforms(img)
 
@@ -133,6 +175,7 @@ train_dataset = CustomVOCDataset(
     root="data/processed/train",
     image_set="train",
     transforms=transform,
+    augmentation=RandomHorizontalShear(),
 )
 # val/ImageSets/Main 内の分割ファイル名は train.txt
 val_dataset = CustomVOCDataset(
@@ -291,6 +334,8 @@ def train_for_seed(seed, model_output_dir, csv_output_dir):
         f"device: {device} / train images: {len(train_dataset)} "
         f"/ val images: {len(val_dataset)} "
         f"/ AMP: {'enabled' if use_amp else 'disabled'}"
+        f"\ntrain augmentation: horizontal shear +/-{TRAIN_SHEAR_DEGREES:g} deg "
+        f"(p={TRAIN_SHEAR_PROBABILITY:g})"
     )
 
     with open(csv_path, "w", newline="", encoding="utf-8") as csv_file:
